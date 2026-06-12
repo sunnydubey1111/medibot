@@ -1,5 +1,28 @@
 # MediBot: Advanced Healthcare RAG & RBAC Assistant
 
+## 💬 What Does MediBot Do?
+
+MediBot is an AI-powered internal assistant built for hospital staff at MediAssist Health Network.
+
+**The problem it solves:**
+Hospital staff — doctors, nurses, billing executives, and technicians — waste time searching through hundreds of PDFs to find information like drug dosages, equipment manuals, billing codes, or HR policies. On top of that, sensitive documents like billing codes should never be accessible to a nurse, and clinical drug protocols should never be visible to a billing executive.
+
+**What it does:**
+- Staff log in with their role (doctor, nurse, etc.) and ask questions in plain English
+- The bot searches through the relevant hospital documents and gives a direct answer with the exact source document and section cited
+- For database questions like *"how many claims are pending this month?"*, it queries the live hospital database and returns the answer in plain English
+- Every role sees only the documents they are permitted to see — a nurse cannot access billing documents no matter how they phrase the question, because the restriction is enforced at the database level, not just the screen
+
+**Example uses:**
+- A doctor asks: *"What is the treatment protocol for NSTEMI?"* → gets the answer from clinical protocols
+- A nurse asks: *"What are the ICU hand hygiene steps?"* → gets the answer from nursing procedures
+- A billing executive asks: *"How many claims were rejected last month?"* → gets a live number from the database
+- A technician asks about equipment calibration → gets the answer from the equipment manual
+
+> **In one line:** MediBot is a role-aware AI assistant that finds the right answer from the right document for the right person — and blocks everyone else.
+
+---
+
 **MediBot** is a production-grade healthcare assistant built for MediAssist Health Network. It integrates IBM Docling-based document parsing, metadata-filtered hybrid search (dense semantic + BM25 keyword), cross-encoder reranking, SQL RAG database analytics, and role-based access control (RBAC) enforced at the retrieval layer.
 
 ---

@@ -10,20 +10,35 @@ The following diagram illustrates the query routing and security filtering flow:
 
 ```mermaid
 graph TD
-    A[User Question + Role] --> B{Router: Analytical/DB question?}
-    
-    B -- "Yes (SQL RAG)" --> C{RBAC Check: Role is billing_executive or admin?}
-    C -- "No (Unauthorized)" --> D[Return Permissions Block Message]
-    C -- "Yes (Authorized)" --> E[SQL RAG: Translate to SQL -> Query SQLite db -> NL Format Response]
-    
-    B -- "No (Hybrid RAG)" --> F[Qdrant In-Memory/Local Search]
-    F --> G[Prefetch Dense search with RBAC filter]
-    F --> H[Prefetch Sparse BM25 search with RBAC filter]
-    G & H --> I[Reciprocal Rank Fusion RRF]
-    I --> J[Cross-Encoder Reranking: Top-10 to Top-3]
-    J --> K[LLM: Generate final answer with Citations]
-    
-    E & K & D --> L[Chat Response]
+    A[User clicks Demo Account on Login Screen] --> B[POST /login with username + password]
+    B --> C{Valid credentials?}
+    C -- "No" --> D[HTTP 401 Unauthorized]
+    C -- "Yes" --> E[Issue signed HS256 JWT\n role + username + exp embedded]
+
+    E --> F[Frontend stores token\n sends as Bearer header on every request]
+    F --> G{Verify JWT signature\n on POST /chat}
+    G -- "Invalid / Expired" --> H[HTTP 401 Unauthorized]
+    G -- "Valid" --> I
+
+    I[User Question + Verified Role] --> J
+
+    J{AuthZ Layer 1\n Keyword Pre-Check}
+    J -- "Restricted keyword detected" --> K[Block: Return permission denial message]
+    J -- "Pass" --> L
+
+    L{Router: Analytical or DB question?}
+    L -- "Yes - SQL RAG" --> M{AuthZ Layer 3\n Role = billing_executive or admin?}
+    M -- "No" --> N[Block: SQL RAG not permitted for this role]
+    M -- "Yes" --> O[SQL RAG: LLM → SQL → SQLite → NL Answer]
+
+    L -- "No - Hybrid RAG" --> P[Qdrant Hybrid Search]
+    P --> Q[AuthZ Layer 2: Prefetch Dense\n filter: access_roles = user_role]
+    P --> R[AuthZ Layer 2: Prefetch Sparse BM25\n filter: access_roles = user_role]
+    Q & R --> S[Reciprocal Rank Fusion RRF]
+    S --> T[Cross-Encoder Reranking: Top-10 → Top-3]
+    T --> U[LLM: Generate Answer with Source Citations]
+
+    O & U & K & N --> V[Chat Response returned to Frontend]
 ```
 
 ---

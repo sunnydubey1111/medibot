@@ -196,41 +196,40 @@ To prove that RBAC is enforced at the database/retrieval layer rather than simpl
 
 ## 🧪 SQL RAG — 4 Analytical Questions Verified
 
-All queries run as `billing_executive` or `admin` (the only roles permitted to access database analytics):
+All queries run as `billing_executive` (the only role permitted to access database analytics here). Each goes through the full 3-step `sql_rag_chain`: NL → SQL (via Gemini) → `clean_sql_query()` → SQLite execution → Gemini NL answer.
 
-| # | Question | Answer |
+| # | Question | Gemini Answer |
 |---|---|---|
-| 1 | *How many claims are pending?* | There are currently **17 claims** in pending status |
-| 2 | *Which department has the highest total claimed amount?* | Retrieved top department with total claimed amount from `claims` table |
-| 3 | *How many maintenance tickets are resolved?* | There are **42 resolved** maintenance tickets |
-| 4 | *What is the total claimed amount for Bajaj Allianz?* | Total claimed amount for Bajaj Allianz is **₹13,53,000** |
-
-Each query goes through the full 3-step `sql_rag_chain`: NL → SQL (via Gemini) → `clean_sql_query()` → SQLite execution → NL answer.
+| 1 | *How many claims are pending?* | There are currently **17 claims** in pending status within the MediAssist Health Network. |
+| 2 | *Which department has the highest total claimed amount?* | The department with the highest total claimed amount is **Orthopaedics**. |
+| 3 | *How many maintenance tickets are resolved?* | There are currently **42 resolved** maintenance tickets. |
+| 4 | *What is the total claimed amount for Bajaj Allianz?* | The total claimed amount for Bajaj Allianz is **₹13,53,000.00**. |
 
 ---
 
 ## 🔬 Hybrid RAG — Exact Medical Term Retrieval
 
-The tip from the assignment states: *"Test your pipeline with queries containing exact medical terms like drug names, ICD codes, or equipment model numbers — these are the cases where keyword search is critical."*
+The assignment tip states: *"Test your pipeline with queries containing exact medical terms like drug names, ICD codes, or equipment model numbers — these are the cases where keyword search is critical."*
 
-**Test 1 — Drug name + ICD code query (as `doctor`):**
+**Test 1 — Drug name + ICD code (as `doctor`):**
 - **Query:** *"What is the drug dosage for NSTEMI treatment?"*
 - **Retrieval type:** `hybrid_rag`
 - **Sources retrieved:**
   - `treatment_protocols.pdf` | *Pharmacological management* | `clinical`
   - `treatment_protocols.pdf` | *D. Acute Myocardial Infarction - NSTEMI* | `clinical`
   - `treatment_protocols.pdf` | *Immediate management (first 60 minutes)* | `clinical`
-- **Answer excerpt:** *"According to treatment_protocols.pdf, under Immediate management (first 60 minutes), the recommended drug dosages for NSTEMI (ICD-10: I21.4) are: Aspirin 300mg loading dose stat..."*
+- **Gemini Answer:** *"According to treatment_protocols.pdf under 'Immediate management (first 60 minutes)', the recommended drug dosages for NSTEMI are: **Aspirin** 300mg loading dose stat (to be chewed), **Clopidogrel** 300mg loading dose (or Ticagrelor as directed)..."*
 
-**Test 2 — Equipment model number query (as `technician`):**
+**Test 2 — Equipment model number (as `technician`):**
 - **Query:** *"What are the calibration steps for SterilPro 3000?"*
 - **Retrieval type:** `hybrid_rag`
 - **Sources retrieved:**
   - `equipment_manual.pdf` | *C. Autoclave Steriliser - SterilPro 3000* | `equipment`
   - `equipment_manual.pdf` | *Programming steps* | `equipment`
-  - `equipment_manual.pdf` | *F. Preventive Maintenance Calendar* | `equipment`
+  - `equipment_manual.pdf` | *F. Preventive Maintenance Calendar (summary)* | `equipment`
+- **Gemini Answer:** *"According to equipment_manual.pdf under 'F. Preventive Maintenance Calendar', validation and calibration for the SterilPro 3000 autoclave steriliser must be performed on an **annual** basis (along with daily Bowie-Dick tests)..."*
 
-The BM25 sparse encoder matches exact terms like `NSTEMI`, `ICD-10: I21.4`, and `SterilPro 3000` that pure semantic search would miss. Dense search handles conceptual understanding. Both are fused via RRF before reranking.
+The BM25 sparse encoder matches exact terms like `NSTEMI`, `ICD-10: I21.4`, and `SterilPro 3000` that pure semantic search would miss. Dense search handles conceptual understanding. Both are fused via RRF before cross-encoder reranking.
 
 ---
 

@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+qdrant-client
+sentence-transformers
+docling
+google-generativeai
+pandas
+PyJWT

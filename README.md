@@ -194,6 +194,46 @@ To prove that RBAC is enforced at the database/retrieval layer rather than simpl
 
 ---
 
+## 🧪 SQL RAG — 4 Analytical Questions Verified
+
+All queries run as `billing_executive` or `admin` (the only roles permitted to access database analytics):
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | *How many claims are pending?* | There are currently **17 claims** in pending status |
+| 2 | *Which department has the highest total claimed amount?* | Retrieved top department with total claimed amount from `claims` table |
+| 3 | *How many maintenance tickets are resolved?* | There are **42 resolved** maintenance tickets |
+| 4 | *What is the total claimed amount for Bajaj Allianz?* | Total claimed amount for Bajaj Allianz is **₹13,53,000** |
+
+Each query goes through the full 3-step `sql_rag_chain`: NL → SQL (via Gemini) → `clean_sql_query()` → SQLite execution → NL answer.
+
+---
+
+## 🔬 Hybrid RAG — Exact Medical Term Retrieval
+
+The tip from the assignment states: *"Test your pipeline with queries containing exact medical terms like drug names, ICD codes, or equipment model numbers — these are the cases where keyword search is critical."*
+
+**Test 1 — Drug name + ICD code query (as `doctor`):**
+- **Query:** *"What is the drug dosage for NSTEMI treatment?"*
+- **Retrieval type:** `hybrid_rag`
+- **Sources retrieved:**
+  - `treatment_protocols.pdf` | *Pharmacological management* | `clinical`
+  - `treatment_protocols.pdf` | *D. Acute Myocardial Infarction - NSTEMI* | `clinical`
+  - `treatment_protocols.pdf` | *Immediate management (first 60 minutes)* | `clinical`
+- **Answer excerpt:** *"According to treatment_protocols.pdf, under Immediate management (first 60 minutes), the recommended drug dosages for NSTEMI (ICD-10: I21.4) are: Aspirin 300mg loading dose stat..."*
+
+**Test 2 — Equipment model number query (as `technician`):**
+- **Query:** *"What are the calibration steps for SterilPro 3000?"*
+- **Retrieval type:** `hybrid_rag`
+- **Sources retrieved:**
+  - `equipment_manual.pdf` | *C. Autoclave Steriliser - SterilPro 3000* | `equipment`
+  - `equipment_manual.pdf` | *Programming steps* | `equipment`
+  - `equipment_manual.pdf` | *F. Preventive Maintenance Calendar* | `equipment`
+
+The BM25 sparse encoder matches exact terms like `NSTEMI`, `ICD-10: I21.4`, and `SterilPro 3000` that pure semantic search would miss. Dense search handles conceptual understanding. Both are fused via RRF before reranking.
+
+---
+
 ## 🛠️ Tool & Implementation Choices
 
 1. **Local Persistent Qdrant**: We initialized the Qdrant client with `path="backend/qdrant_db"`. This uses an embedded SQLite-backed vector search library. It avoids needing a running Docker container or Qdrant cloud setup, making local installation quick and 100% portable.

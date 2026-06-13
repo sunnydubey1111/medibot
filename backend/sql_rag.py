@@ -17,8 +17,7 @@ load_dotenv(os.path.join(workspace_root, ".env"))
 
 DB_PATH = os.path.join(workspace_root, "docs", "mediassist_data", "mediassist_data", "db", "mediassist.db")
 
-DATABASE_SCHEMA = """
-Table 1: claims
+_SCHEMA_CLAIMS = """Table: claims
 Columns:
   - claim_id (TEXT): Unique ID of the claim
   - patient_id (TEXT): Unique ID of the patient
@@ -31,9 +30,9 @@ Columns:
   - approved_amount (REAL): Approved amount in Rupees (can be NULL/None if pending or rejected)
   - status (TEXT): Status of the claim ('approved', 'pending', 'rejected', etc.)
   - submitted_date (TEXT): Date submitted (format: 'YYYY-MM-DD')
-  - resolved_date (TEXT): Date resolved (format: 'YYYY-MM-DD', can be NULL)
+  - resolved_date (TEXT): Date resolved (format: 'YYYY-MM-DD', can be NULL)"""
 
-Table 2: maintenance_tickets
+_SCHEMA_MAINTENANCE_TICKETS = """Table: maintenance_tickets
 Columns:
   - ticket_id (TEXT): Unique ID of the ticket
   - equipment_name (TEXT): Name of the equipment (e.g. 'SterilPro 3000', 'DriveFlow IP-200')
@@ -46,14 +45,23 @@ Columns:
   - raised_date (TEXT): Date raised (format: 'YYYY-MM-DD')
   - resolved_date (TEXT): Date resolved (format: 'YYYY-MM-DD', can be NULL)
   - status (TEXT): Status of the ticket ('resolved', 'in_progress', 'open', etc.)
-  - resolution_note (TEXT): Note on how the issue was resolved (can be NULL)
-"""
+  - resolution_note (TEXT): Note on how the issue was resolved (can be NULL)"""
 
-SQL_TRANSLATION_SYSTEM_INSTRUCTION = f"""
-You are a highly precise SQL translator. Your job is to translate a natural language question about the MediAssist database into a single SQLite SQL query.
-Use only the database tables and columns described below:
-{DATABASE_SCHEMA}
+# Full schema used for admin and as a fallback reference
+DATABASE_SCHEMA = f"{_SCHEMA_CLAIMS}\n\n{_SCHEMA_MAINTENANCE_TICKETS}"
 
+_TABLE_SCHEMAS = {
+    "claims": _SCHEMA_CLAIMS,
+    "maintenance_tickets": _SCHEMA_MAINTENANCE_TICKETS,
+}
+
+# Tables each role is permitted to query (must be declared before helper below)
+ROLE_ALLOWED_TABLES = {
+    "billing_executive": ["claims"],
+    "admin":             ["claims", "maintenance_tickets"],
+}
+
+_SQL_TRANSLATION_RULES = """
 RULES:
 1. Return ONLY the SQL query. Do not write markdown, do not write explanations, do not write anything except the SQL query.
 2. If the user query is asking for something not in the schema, return a SELECT statement that returns an error message or simply SELECT 0.
@@ -61,6 +69,19 @@ RULES:
 4. Perform case-insensitive string matching using LIKE if appropriate, or ensure values are matched exactly (e.g. department names are lowercase in the db).
 5. For date ranges, use standard SQL operators: >=, <=, or BETWEEN.
 """
+
+
+def _get_sql_translation_instruction(user_role: str) -> str:
+    """Returns a SQL translation prompt containing only the tables this role may access."""
+    allowed = ROLE_ALLOWED_TABLES.get(user_role, list(_TABLE_SCHEMAS.keys()))
+    role_schema = "\n\n".join(_TABLE_SCHEMAS[t] for t in allowed if t in _TABLE_SCHEMAS)
+    return (
+        "You are a highly precise SQL translator. Your job is to translate a natural language "
+        "question about the MediAssist database into a single SQLite SQL query.\n"
+        "Use only the database tables and columns described below:\n"
+        f"{role_schema}\n"
+        f"{_SQL_TRANSLATION_RULES}"
+    )
 
 RESPONSE_GENERATION_SYSTEM_INSTRUCTION = """
 You are MediBot, an intelligent assistant for MediAssist Health Network.
@@ -198,12 +219,6 @@ def fallback_response_generator(question: str, sql_query: str, db_result: str) -
         
     return f"Based on the database records, the result is: {json.dumps(data)}"
 
-# Tables each role is permitted to query
-ROLE_ALLOWED_TABLES = {
-    "billing_executive": ["claims"],
-    "admin":             ["claims", "maintenance_tickets"],
-}
-
 
 def _check_table_access(sql_query: str, user_role: str) -> str | None:
     """Returns an error message if the query accesses a table the role cannot see, else None."""
@@ -224,12 +239,13 @@ def sql_rag_chain(question: str, user_role: str = "admin") -> str:
     """
     Translates the question to SQL, executes it, and outputs a natural language answer.
     """
-    # Step 1: Translate NL question to SQL
+    # Step 1: Translate NL question to SQL (role-scoped schema — LLM only sees allowed tables)
     prompt_translate = f"Translate the following question into a SQLite SQL query:\nQuestion: {question}"
-    
+    translation_instruction = _get_sql_translation_instruction(user_role)
+
     use_fallback = False
     try:
-        raw_sql = call_llm(prompt_translate, system_instruction=SQL_TRANSLATION_SYSTEM_INSTRUCTION)
+        raw_sql = call_llm(prompt_translate, system_instruction=translation_instruction)
         if (raw_sql.startswith("Oops!") or raw_sql.startswith("[MOCK") or 
             "oops!" in raw_sql.lower() or "trouble connecting" in raw_sql.lower() or 
             "spending cap" in raw_sql.lower() or "exceeded" in raw_sql.lower()):

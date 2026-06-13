@@ -94,7 +94,7 @@ def get_combined_query(question: str, username: str) -> str:
         "elaborate more details", "can you elaborate", "can you explain",
         "elaborate more on this", "elaborate on this",
     ]
-    if (q in followups or len(q.split()) <= 2) and username in LAST_QUERIES:
+    if q in followups and username in LAST_QUERIES:
         prev = LAST_QUERIES[username]
         if prev:
             return f"{prev} (elaborate more details)"
@@ -114,14 +114,23 @@ def check_restricted_keywords(question: str, role: str) -> Optional[str]:
     ]):
         return f"As a {role.replace('_', ' ')}, you do not have permission to access billing and insurance guides. Please contact the Billing Department or log in with the Billing Executive role."
 
-    if "clinical" not in cols and any(kw in q for kw in [
+    # Terms exclusively in clinical collection (block all non-clinical roles including nurses)
+    _clinical_exclusive = [
         "dosage", "drug formulary", "treatment protocol", "coronary", "cardiac",
-        "infarction", "nstemi", "diagnostics", "troponin", "medicine", "prescribe",
+        "infarction", "nstemi", "diagnostics", "troponin", "prescribe",
         "treatment steps", "drug dosage", "clinical doc",
-        "antibiotic", "medication", "drug", "therapy", "diagnosis", "symptom",
-        "disease", "infection", "patient care", "clinical", "pharma",
-    ]):
-        return f"As a {role.replace('_', ' ')}, you do not have permission to access clinical protocols and drug formularies. Please consult a doctor or log in with the Doctor role."
+        "antibiotic", "medication", "drug", "pharma",
+    ]
+    # Terms that nursing collection also covers — only block roles with neither clinical nor nursing
+    _clinical_nursing_overlap = [
+        "medicine", "therapy", "diagnosis", "symptom", "disease",
+        "infection", "patient care", "clinical",
+    ]
+    if "clinical" not in cols:
+        if any(kw in q for kw in _clinical_exclusive):
+            return f"As a {role.replace('_', ' ')}, you do not have permission to access clinical protocols and drug formularies. Please consult a doctor or log in with the Doctor role."
+        if "nursing" not in cols and any(kw in q for kw in _clinical_nursing_overlap):
+            return f"As a {role.replace('_', ' ')}, you do not have permission to access clinical or nursing documents. Please consult clinical staff."
 
     if "nursing" not in cols and any(kw in q for kw in [
         "nursing procedure", "icu guideline", "hand hygiene", "ventilator bundle",
@@ -175,9 +184,9 @@ def route_query(question: str) -> str:
 
     def _kw():
         ql = question.lower()
-        if any(k in ql for k in ["how many", "total", "amount", "count", "claim", "ticket",
-                                  "escalated", "approved", "status of", "average", "sum",
-                                  "raised", "resolved", "pending", "insurer", "delete", "drop table", "logs"]):
+        if any(k in ql for k in ["how many", "total claimed", "count", "claim", "ticket",
+                                  "escalated", "average claim", "sum of", "insurer",
+                                  "delete", "drop table", "logs"]):
             return "sql_rag"
         return "hybrid_rag"
 

@@ -10,6 +10,30 @@ const DEMO_ACCOUNTS = [
   { username: 'admin.sys',    role: 'admin',             name: 'System Admin',  title: 'IT & Executive Ops' },
 ];
 
+const ROLE_EMOJIS = {
+  doctor:            '👨‍⚕️',
+  nurse:             '👩‍⚕️',
+  billing_executive: '💼',
+  technician:        '🔧',
+  admin:             '🛡️',
+};
+
+const COLLECTION_EMOJIS = {
+  general:   '📋',
+  clinical:  '🩺',
+  nursing:   '💉',
+  billing:   '💰',
+  equipment: '⚙️',
+};
+
+const SAMPLE_QUESTIONS = {
+  doctor:            ['What is the treatment protocol for NSTEMI?', 'What is the standard dosage of amoxicillin?', 'What are the diagnostic criteria for sepsis?'],
+  nurse:             ['What is the ICU hand hygiene protocol?', 'How do I prevent patient falls in the ICU?', 'What are the steps for central line insertion care?'],
+  billing_executive: ['What documents are needed for a cashless claim?', 'How do I submit a Medicare Part B claim?', 'What is the ICD-10 code for hypertension?'],
+  technician:        ['What is the maintenance schedule for SterilPro 3000?', 'How do I troubleshoot DriveFlow IP-200 fault code F-05?', 'What are the calibration steps for the autoclave?'],
+  admin:             ['How many claims are pending today?', 'Which department has the highest claimed amount?', 'How many maintenance tickets are open?'],
+};
+
 const ROLE_COLLECTIONS_DESC = {
   doctor:            'Clinical treatment protocols, drug formulary, diagnostic guidelines, nursing care, and general policies',
   nurse:             'ICU nursing procedures, infection control, and general staff FAQs',
@@ -290,15 +314,17 @@ export default function Home() {
       <div className="login-container">
         <div className="login-card">
           <div className="login-header">
-            <h1 className="login-logo">MediBot</h1>
-            <p className="login-subtitle">An AI Assistant for MediAssist Network</p>
+            <h1 className="login-logo">🏥 MediBot</h1>
+            <p className="login-subtitle">🔒 Secure AI Clinical Assistant · MediAssist Health Network</p>
           </div>
+          <p className="login-select-label">👤 Select your profile to continue</p>
           <div className="demo-account-list">
             {DEMO_ACCOUNTS.map(acc => (
               <button key={acc.username} className="demo-account-btn" onClick={() => handleLogin(acc.username)} disabled={loading}>
+                <span className="account-emoji">{ROLE_EMOJIS[acc.role]}</span>
                 <div className="account-info">
                   <span className="account-name">{acc.name}</span>
-                  <span className="account-username">{acc.title} ({acc.username})</span>
+                  <span className="account-username">{acc.title} · {acc.username}</span>
                 </div>
                 <span className={`role-badge role-${acc.role}`}>{acc.role.replace('_', ' ')}</span>
               </button>
@@ -313,11 +339,11 @@ export default function Home() {
   return (
     <div className="app-layout">
       <div className="sidebar">
-        <div className="sidebar-brand">MediBot</div>
+        <div className="sidebar-brand">🏥 MediBot</div>
 
         <div className="user-profile-card">
           <div className="profile-header">
-            <div className="profile-avatar">{user.name.split(' ').map(w => w[0]).join('')}</div>
+            <div className="profile-avatar">{ROLE_EMOJIS[user.role]}</div>
             <div className="profile-details">
               <span className="profile-name">{user.name}</span>
               <span className="profile-title">{user.username}</span>
@@ -327,43 +353,56 @@ export default function Home() {
         </div>
 
         <div className="access-scope">
-          <span className="scope-title">Authorized Document Collections</span>
+          <span className="scope-title">📂 Authorized Collections</span>
           <div className="collection-list">
             {['general', 'clinical', 'nursing', 'billing', 'equipment'].map(col => {
               const allowed = collections.includes(col);
               return (
                 <div key={col} className={`collection-item ${allowed ? 'active' : ''}`}>
-                  <span className="collection-dot"></span>
+                  <span className="collection-emoji">{COLLECTION_EMOJIS[col]}</span>
                   <span className="capitalize">{col}</span>
-                  {!allowed && <span className="ml-auto text-[10px] text-rose-400 uppercase font-semibold">Blocked</span>}
+                  {allowed
+                    ? <span className="ml-auto text-[10px] text-teal-400 uppercase font-semibold">✓</span>
+                    : <span className="ml-auto text-[10px] text-rose-400 uppercase font-semibold">🔒</span>}
                 </div>
               );
             })}
           </div>
         </div>
 
-        <button className="logout-btn" onClick={handleLogout}>Sign Out &amp; Switch Profile</button>
+        <button className="logout-btn" onClick={handleLogout}>🚪 Sign Out &amp; Switch Profile</button>
       </div>
 
       <div className="chat-section">
         <div className="chat-header">
-          <div className="header-title">Clinical Inquiry Panel</div>
+          <div className="header-title">💬 Clinical Inquiry Panel</div>
           <div className="system-status">
             <span className="status-indicator"></span>
-            <span>MediAssist Central DB Connected</span>
+            <span>🟢 MediAssist Central DB · Online</span>
           </div>
         </div>
 
         <div className="messages-container">
           {messages.length === 0 ? (
             <div className="empty-state">
-              <span className="empty-icon">🏥</span>
+              <span className="empty-icon">🩺</span>
               <h2 className="empty-title">How can I help you today?</h2>
-              <p>Ask a question about treatment guidelines, billing codes, equipment maintenance schedules, or query relational operational records.</p>
+              <p className="empty-subtitle">Ask about treatment guidelines, billing codes, equipment maintenance, or operational records.</p>
+              <div className="sample-questions">
+                <p className="sample-label">✨ Try asking:</p>
+                {(SAMPLE_QUESTIONS[user.role] || []).map((q, i) => (
+                  <button key={i} className="sample-btn" onClick={() => setInputText(q)}>
+                    💬 {q}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             messages.map((msg, index) => (
               <div key={index} className={`message-wrapper ${msg.sender === 'user' ? 'user' : 'bot'}`}>
+                {msg.sender === 'bot' && (
+                  <div className="bot-avatar" title="MediBot AI">🤖</div>
+                )}
                 <div className="message-bubble">
                   <div className={msg.streaming ? 'streaming-cursor' : ''}>
                     {renderFormattedText(msg.text)}
@@ -371,7 +410,7 @@ export default function Home() {
 
                   {msg.isBlocked && (
                     <div className="rbac-blocked-card">
-                      <span className="rbac-blocked-icon">⚠️</span>
+                      <span className="rbac-blocked-icon">🔒</span>
                       <div className="rbac-blocked-text">
                         <strong>Access Restricted:</strong> Your current profile does not have permission to view this information. Contact the hospital IT Helpdesk to request access.
                       </div>
@@ -392,7 +431,7 @@ export default function Home() {
 
                       {msg.sources && msg.sources.length > 0 && (
                         <div className="flex-grow">
-                          <div className="sources-title">Verified Sources ({msg.sources.length})</div>
+                          <div className="sources-title">📎 Verified Sources ({msg.sources.length})</div>
                           <div className="citations-list">
                             {msg.sources.map((src, si) => (
                               <span key={si} className="citation-tag" title={`Collection: ${src.collection}`}>
@@ -429,12 +468,12 @@ export default function Home() {
             <input
               type="text"
               className="chat-input-field"
-              placeholder={`Ask MediBot (${user.role.replace('_', ' ')})...`}
+              placeholder={`💬 Ask MediBot as ${user.role.replace('_', ' ')} — type your question...`}
               value={inputText}
               onChange={e => setInputText(e.target.value)}
               disabled={loading}
             />
-            <button type="submit" className="chat-send-btn" disabled={loading || !inputText.trim()}>➔</button>
+            <button type="submit" className="chat-send-btn" disabled={loading || !inputText.trim()}>🚀</button>
           </form>
         </div>
       </div>

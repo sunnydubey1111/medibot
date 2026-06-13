@@ -36,21 +36,21 @@ graph TD
     A[User selects Demo Account] --> B[POST /login → JWT issued with role embedded]
     B --> C[User submits question\n Bearer token sent on every request]
 
-    C --> D{AuthZ Layer 1\n Keyword Pre-Check}
-    D -- "Restricted keyword" --> E[Permission denial message returned]
-    D -- "Pass" --> F
+    C --> D{Keyword Pre-Check\n Does query mention restricted terms?\n e.g. billing code, dosage, calibration}
+    D -- "Yes → blocked before any search" --> E[Return role-specific denial message]
+    D -- "No → proceed" --> F
 
     F{Router: Analytical or DB question?}
-    F -- "Yes - SQL RAG" --> G{Role = billing_executive or admin?}
-    G -- "No" --> H[Block: SQL RAG not permitted for this role]
+    F -- "Yes - SQL RAG" --> G{Role permitted for DB analytics?\n billing_executive or admin only}
+    G -- "No" --> H[Return: SQL RAG not permitted for this role]
     G -- "Yes" --> I[SQL RAG: LLM → SQL → SQLite → NL Answer]
 
     F -- "No - Hybrid RAG" --> J[Qdrant Hybrid Search]
-    J --> K[Prefetch Dense + AuthZ Layer 2\n filter: access_roles = user_role]
-    J --> L[Prefetch Sparse BM25 + AuthZ Layer 2\n filter: access_roles = user_role]
-    K & L --> M[Reciprocal Rank Fusion RRF]
+    J --> K[Dense Vector Search\n Qdrant filter: access_roles must include user_role]
+    J --> L[Sparse BM25 Keyword Search\n Qdrant filter: access_roles must include user_role]
+    K & L --> M[Reciprocal Rank Fusion RRF\n Restricted chunks never returned by DB]
     M --> N[Cross-Encoder Reranking: Top-10 → Top-3]
-    N --> O[LLM: Generate Answer with Source Citations]
+    N --> O[LLM generates answer with Source Citations]
 
     I & O & E & H --> P[Chat Response returned to Frontend]
 ```

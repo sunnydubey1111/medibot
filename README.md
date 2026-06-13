@@ -45,10 +45,11 @@ graph TD
     G -- "No" --> H[Return: SQL RAG not permitted for this role]
     G -- "Yes" --> I[SQL RAG: LLM → SQL → SQLite → NL Answer]
 
-    F -- "No - Hybrid RAG" --> J[Qdrant Hybrid Search]
-    J --> K[Dense Vector Search\n Qdrant filter: access_roles must include user_role]
-    J --> L[Sparse BM25 Keyword Search\n Qdrant filter: access_roles must include user_role]
-    K & L --> M[Reciprocal Rank Fusion RRF\n Restricted chunks never returned by DB]
+    F -- "No - Hybrid RAG" --> J[Qdrant Hybrid Search\n Both run in parallel via Prefetch]
+    J -- "Semantic similarity" --> K[Dense Vector Search\n Qdrant filter: access_roles must include user_role]
+    J -- "Exact keyword match" --> L[Sparse BM25 Keyword Search\n Qdrant filter: access_roles must include user_role]
+    K -- "Ranked results" --> M[Reciprocal Rank Fusion RRF\n Restricted chunks never returned by DB]
+    L -- "Ranked results" --> M
     M --> N[Cross-Encoder Reranking: Top-10 → Top-3]
     N --> O[LLM generates answer with Source Citations]
 

@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@source "../../**/*.{js,jsx,ts,tsx}";
 
 :root {
   /* Typography — system fonts, no external network requests */

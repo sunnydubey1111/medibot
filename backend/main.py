@@ -77,30 +77,62 @@ def check_restricted_keywords(question: str, role: str) -> Optional[str]:
             
     return None
 
-LAST_QUERIES = {}
+LAST_QUERIES = {}  # keyed by username to prevent cross-user context leakage
 
-def get_combined_query(question: str, role: str) -> str:
+# Per-user rate limiting: max 10 requests per 60 seconds
+RATE_LIMIT_STORE: Dict[str, list] = {}
+RATE_LIMIT_MAX = 10
+RATE_LIMIT_WINDOW = 60
+
+def check_rate_limit(username: str):
+    now = time.time()
+    timestamps = RATE_LIMIT_STORE.get(username, [])
+    timestamps = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
+    if len(timestamps) >= RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: maximum {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW} seconds. Please wait before sending more messages."
+        )
+    timestamps.append(now)
+    RATE_LIMIT_STORE[username] = timestamps
+
+# Per-user conversation history for multi-turn context (capped at last 5 turns)
+CONVERSATION_HISTORY: Dict[str, list] = {}
+HISTORY_MAX_TURNS = 5
+
+def get_user_history(username: str) -> list:
+    return CONVERSATION_HISTORY.get(username, [])
+
+def update_user_history(username: str, user_message: str, bot_answer: str):
+    history = CONVERSATION_HISTORY.get(username, [])
+    history.append({"role": "user", "parts": [user_message]})
+    history.append({"role": "model", "parts": [bot_answer]})
+    # Keep only the last N turns to avoid unbounded memory growth
+    max_messages = HISTORY_MAX_TURNS * 2
+    if len(history) > max_messages:
+        history = history[-max_messages:]
+    CONVERSATION_HISTORY[username] = history
+
+def get_combined_query(question: str, username: str) -> str:
     q = question.lower().strip().rstrip("?.!")
-    
-    # Common conversational follow-up patterns
+
     followup_keywords = [
-        "elaborate", "elaborate more", "tell me more", "explain more", "more details", 
+        "elaborate", "elaborate more", "tell me more", "explain more", "more details",
         "more info", "details", "explain", "go on", "elaborate further", "further details",
         "substantial info", "give me more info", "what else", "tell me more about this",
         "elaborate more details", "can you elaborate", "can you explain", "elaborate more",
         "elaborate more on this", "elaborate on this"
     ]
-    
-    # If it's a follow-up and we have a previous query for this role
-    if (q in followup_keywords or len(q.split()) <= 2) and role in LAST_QUERIES:
-        prev_query = LAST_QUERIES[role]
+
+    # If it's a follow-up and we have a previous query for this specific user
+    if (q in followup_keywords or len(q.split()) <= 2) and username in LAST_QUERIES:
+        prev_query = LAST_QUERIES[username]
         if prev_query:
             return f"{prev_query} (elaborate more details)"
-            
-    # Otherwise, update the last query cache
+
     if len(q.split()) > 2:
-        LAST_QUERIES[role] = question
-        
+        LAST_QUERIES[username] = question
+
     return question
 
 CLASSIFICATION_SYSTEM_INSTRUCTION = """
@@ -220,19 +252,23 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
     user_role = req.role.lower()
     
     # Extract and verify JWT token from Authorization header if present
+    username = "anonymous"
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
         try:
             payload = decode_jwt(token)
             user_role = payload.get("role", user_role).lower()
-            print(f"[JWT Auth] Verified token for user '{payload.get('username')}' with role '{user_role}'")
+            username = payload.get("username", "anonymous")
+            print(f"[JWT Auth] Verified token for user '{username}' with role '{user_role}'")
         except Exception as e:
             raise HTTPException(status_code=401, detail=f"Unauthorized: Invalid token ({str(e)})")
     if user_role not in ROLE_COLLECTIONS:
         raise HTTPException(status_code=400, detail="Invalid user role")
-        
+
+    check_rate_limit(username)
+
     original_question = req.question
-    question = get_combined_query(original_question, user_role)
+    question = get_combined_query(original_question, username)
     
     # 0. Check for role-based restricted keyword queries first
     restriction_message = check_restricted_keywords(question, user_role)
@@ -314,7 +350,8 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
         try:
             answer = call_llm(
                 prompt=prompt_rag,
-                system_instruction=RAG_ANSWER_SYSTEM_INSTRUCTION
+                system_instruction=RAG_ANSWER_SYSTEM_INSTRUCTION,
+                history=get_user_history(username)
             )
         except Exception:
             answer = ""
@@ -336,6 +373,7 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
                 
                 answer = "\n\n---\n\n".join(answer_parts)
             
+        update_user_history(username, question, answer)
         return ChatResponse(
             answer=answer,
             sources=sources,

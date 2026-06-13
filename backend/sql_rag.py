@@ -97,17 +97,25 @@ def execute_sql(query: str) -> str:
     """
     if not os.path.exists(DB_PATH):
         return f"Database file not found at {DB_PATH}"
-        
+
+    # Reject multi-statement queries (primary SQL injection vector)
+    if ";" in query:
+        return "Database execution error: Multi-statement queries are not permitted for security reasons."
+
+    # Reject inline SQL comments used to terminate queries mid-statement
+    if "--" in query or "/*" in query:
+        return "Database execution error: SQL comments are not permitted in queries."
+
     # Security check: Only allow SELECT queries to protect database integrity
     clean_q = query.strip().upper()
-    
+
     # Check for adversarial drops/modifications
     blocked_keywords = ["DROP ", "DELETE ", "INSERT ", "UPDATE ", "ALTER ", "CREATE ", "REPLACE ", "TRUNCATE "]
     if not clean_q.startswith("SELECT") and not clean_q.startswith("WITH"):
         if any(kw in clean_q for kw in blocked_keywords):
             return "Database execution error: Destructive queries (DROP, DELETE, INSERT, UPDATE) are blocked for safety reasons."
         return "Database execution error: Only SELECT queries are permitted for safety reasons."
-        
+
     if any(kw in clean_q for kw in blocked_keywords):
         return "Database execution error: Modifying queries are blocked for safety reasons."
         

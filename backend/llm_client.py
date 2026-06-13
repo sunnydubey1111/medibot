@@ -17,20 +17,25 @@ if api_key:
 else:
     print("WARNING: GEMINI_API_KEY is not set in the environment or .env file.")
 
-def call_llm(prompt: str, system_instruction: str = None) -> str:
+def call_llm(prompt: str, system_instruction: str = None, history: list = None) -> str:
     """
-    Calls Google Gemini (gemini-3.5-flash) with the given prompt and system instruction.
+    Calls Google Gemini (gemini-3.5-flash) with the given prompt and optional conversation history.
+    history format: [{"role": "user", "parts": ["..."]}, {"role": "model", "parts": ["..."]}]
     If the API key is missing, returns a mock response to allow graceful operation.
     """
     if not api_key:
         return "[MOCK RESPONSE] GEMINI_API_KEY is not set. Please configure it in your .env file."
-        
+
     try:
         model = genai.GenerativeModel(
             model_name="gemini-3.5-flash",
             system_instruction=system_instruction
         )
-        response = model.generate_content(prompt)
+        if history:
+            chat = model.start_chat(history=history)
+            response = chat.send_message(prompt)
+        else:
+            response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         print(f"Error calling Gemini API: {e}")

@@ -3,6 +3,7 @@ import sys
 import json
 import math
 import re
+import time
 from pathlib import Path
 from collections import Counter
 from typing import List, Dict, Tuple, Any
@@ -188,6 +189,30 @@ def get_chunk_type(doc_items: List[Any]) -> str:
     return 'text'
 
 
+def check_docs_staleness(data_root: Path, backend_dir: Path):
+    """Warn if any source documents were modified after the last ingest run."""
+    stamp_file = backend_dir / "last_ingest_timestamp.txt"
+    if not stamp_file.exists():
+        print("[Staleness Check] No previous ingest timestamp found — first run.")
+        return
+    last_ingest = float(stamp_file.read_text().strip())
+    stale = []
+    for col_info in COLLECTIONS_INFO.values():
+        col_dir = data_root / col_info["folder"]
+        if not col_dir.exists():
+            continue
+        for f in col_dir.glob("*"):
+            if f.suffix.lower() in [".pdf", ".md"] and f.stat().st_mtime > last_ingest:
+                stale.append(f.name)
+    if stale:
+        print(f"\n[Staleness Check] WARNING: {len(stale)} document(s) changed since last ingest:")
+        for name in stale:
+            print(f"  - {name}")
+        print("Re-run ingest.py to update the vector index.\n")
+    else:
+        print("[Staleness Check] All documents are up to date with the current index.")
+
+
 def parse_and_chunk_documents(data_root: Path) -> List[Dict[str, Any]]:
     converter = DocumentConverter()
     chunker = HierarchicalChunker()
@@ -247,7 +272,9 @@ def main():
     backend_dir = Path(os.path.dirname(os.path.abspath(__file__)))
     data_root = backend_dir.parent / "docs" / "mediassist_data" / "mediassist_data"
     backend_dir.mkdir(exist_ok=True)
-    
+
+    check_docs_staleness(data_root, backend_dir)
+
     # 1. Parse and chunk all files
     print("Starting document parsing and chunking...")
     chunks = parse_and_chunk_documents(data_root)
@@ -342,6 +369,9 @@ def main():
         )
         print(f"  Uploaded batch {i // batch_size + 1}/{(len(points) - 1) // batch_size + 1}")
         
+    stamp_file = backend_dir / "last_ingest_timestamp.txt"
+    stamp_file.write_text(str(time.time()))
+    print(f"Ingest timestamp saved to {stamp_file}")
     print("Ingestion and Vector Indexing completed successfully!")
 
 if __name__ == '__main__':

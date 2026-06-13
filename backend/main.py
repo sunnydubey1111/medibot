@@ -317,6 +317,15 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
                    f"I can only search: {', '.join(ROLE_COLLECTIONS[user_role])}.")
             log_query(username, user_role, original_question, "sql_rag", blocked=True)
             return ChatResponse(answer=msg, sources=[], retrieval_type="sql_rag", role=user_role)
+        # billing_executive can only query claims — block equipment/maintenance queries explicitly
+        if user_role == "billing_executive":
+            ql = question.lower()
+            if any(k in ql for k in ["maintenance ticket", "equipment category", "equipment maintenance",
+                                      "maintenance record", "open maintenance", "resolved maintenance"]):
+                msg = ("As a billing executive, you can only query claims and billing data. "
+                       "Equipment maintenance records are managed by the Biomedical Engineering department.")
+                log_query(username, user_role, original_question, "sql_rag", blocked=True)
+                return ChatResponse(answer=msg, sources=[], retrieval_type="sql_rag", role=user_role)
         answer = sql_rag_chain(question, user_role)
         log_query(username, user_role, original_question, "sql_rag")
         return ChatResponse(answer=answer, sources=[], retrieval_type="sql_rag", role=user_role)
@@ -397,6 +406,16 @@ async def chat_stream(req: ChatRequest, authorization: Optional[str] = Header(No
                 yield f"data: {json.dumps({'type': 'chunk', 'text': msg})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'sql_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
                 return
+            if user_role == "billing_executive":
+                ql = question.lower()
+                if any(k in ql for k in ["maintenance ticket", "equipment category", "equipment maintenance",
+                                          "maintenance record", "open maintenance", "resolved maintenance"]):
+                    msg = ("As a billing executive, you can only query claims and billing data. "
+                           "Equipment maintenance records are managed by the Biomedical Engineering department.")
+                    log_query(username, user_role, original_question, "sql_rag", blocked=True)
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': msg})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'sql_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
+                    return
             answer = await loop.run_in_executor(None, sql_rag_chain, question)
             log_query(username, user_role, original_question, "sql_rag")
             yield f"data: {json.dumps({'type': 'chunk', 'text': answer})}\n\n"

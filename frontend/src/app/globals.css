@@ -1,10 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
+@source "../../**/*.{js,jsx,ts,tsx}";
 
 :root {
-  /* Typography */
-  --font-sans: 'Inter', sans-serif;
-  --font-display: 'Outfit', sans-serif;
+  /* Typography — system fonts, no external network requests */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Segoe UI', system-ui, -apple-system, sans-serif;
 
   /* Harmonious Dark Palette (Teal & Slate Clinical Theme) */
   --bg-app: #0f172a;           /* Slate 900 */

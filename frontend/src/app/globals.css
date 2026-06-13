@@ -730,26 +730,47 @@ body {
 .confidence-low    { background: rgba(244,63,94,0.1);   color: var(--color-rose);    border: 1px solid rgba(244,63,94,0.25); }
 
 /* Markdown styling in messages */
-.message-bubble h1, .message-bubble h2, .message-bubble h3 {
+.message-bubble h1, .message-bubble h2, .message-bubble h3,
+.message-bubble .heading-l1, .message-bubble .heading-l2, .message-bubble .heading-l3 {
   font-family: var(--font-display);
-  margin-top: 12px;
+  margin-top: 14px;
   margin-bottom: 6px;
+  color: var(--color-teal);
 }
-.message-bubble h1 { font-size: 1.2rem; }
-.message-bubble h2 { font-size: 1.1rem; }
-.message-bubble h3 { font-size: 1.0rem; }
+.message-bubble h1, .message-bubble .heading-l1 { font-size: 1.15rem; }
+.message-bubble h2, .message-bubble .heading-l2 { font-size: 1.05rem; border-bottom: 1px solid var(--border-color); padding-bottom: 4px; }
+.message-bubble h3, .message-bubble .heading-l3 { font-size: 0.95rem; color: var(--text-secondary); }
 
 .message-bubble p {
   margin-bottom: 8px;
 }
 
-.message-bubble ul, .message-bubble ol {
+.message-bubble ul {
+  list-style-type: disc;
+  margin-left: 20px;
+  margin-bottom: 12px;
+}
+
+.message-bubble ol {
+  list-style-type: decimal;
   margin-left: 20px;
   margin-bottom: 12px;
 }
 
 .message-bubble li {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  line-height: 1.55;
+}
+
+.response-blockquote {
+  border-left: 3px solid var(--color-teal);
+  padding: 6px 12px;
+  margin: 8px 0;
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 0.875rem;
+  background: rgba(20, 184, 166, 0.05);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
 .message-bubble code {

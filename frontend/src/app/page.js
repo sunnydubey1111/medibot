@@ -284,27 +284,45 @@ export default function Home() {
     }
 
     const lines = text.split('\n');
-    let inList = false, listItems = [];
+    // listType: null | 'ul' | 'ol'
+    let listType = null, listItems = [];
     const elements = [];
+
+    const flushList = (idx) => {
+      if (!listType) return;
+      if (listType === 'ol') elements.push(<ol key={`ol-${idx}`}>{listItems}</ol>);
+      else elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>);
+      listItems = []; listType = null;
+    };
 
     lines.forEach((line, idx) => {
       const trimmed = line.trim();
-      const hMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
-      const bMatch = trimmed.match(/^([*\-+•]|&bull;)\s+(.*)$/);
+      const hMatch  = trimmed.match(/^(#{1,6})\s+(.*)$/);
+      const bMatch  = trimmed.match(/^([*\-+•])\s+(.*)$/);
+      const nMatch  = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+      const qMatch  = trimmed.match(/^>\s*(.*)/);
 
       if (hMatch) {
-        if (inList) { elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>); listItems = []; inList = false; }
+        flushList(idx);
         const Tag = `h${hMatch[1].length}`;
         elements.push(<Tag key={`h-${idx}`} className={`heading-l${hMatch[1].length}`}>{formatInline(hMatch[2])}</Tag>);
       } else if (bMatch) {
-        inList = true;
+        if (listType === 'ol') flushList(idx);
+        listType = 'ul';
         listItems.push(<li key={`li-${idx}`}>{formatInline(bMatch[2])}</li>);
+      } else if (nMatch) {
+        if (listType === 'ul') flushList(idx);
+        listType = 'ol';
+        listItems.push(<li key={`li-${idx}`}>{formatInline(nMatch[2])}</li>);
+      } else if (qMatch) {
+        flushList(idx);
+        elements.push(<blockquote key={`bq-${idx}`} className="response-blockquote">{formatInline(qMatch[1])}</blockquote>);
       } else {
-        if (inList) { elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>); listItems = []; inList = false; }
+        flushList(idx);
         if (trimmed) elements.push(<p key={`p-${idx}`} className="mb-2">{formatInline(line)}</p>);
       }
     });
-    if (inList) elements.push(<ul key="ul-final">{listItems}</ul>);
+    flushList('final');
     return elements;
   };
 

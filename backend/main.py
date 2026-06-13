@@ -210,16 +210,21 @@ def _confidence(score: float):
 
 # --- Auth helper ---
 def _extract_auth(user_role: str, authorization: Optional[str]):
-    username = "anonymous"
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ")[1]
-        try:
-            payload = decode_jwt(token)
-            user_role = payload.get("role", user_role).lower()
-            username = payload.get("username", "anonymous")
-            print(f"[JWT] '{username}' / '{user_role}'")
-        except Exception as e:
-            raise HTTPException(status_code=401, detail=f"Unauthorized: Invalid token ({e})")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized: Missing or invalid authorization token.")
+        
+    token = authorization.split(" ")[1]
+    try:
+        payload = decode_jwt(token)
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid token type.")
+        user_role = payload.get("role", user_role).lower()
+        username = payload.get("username", "anonymous")
+        print(f"[JWT] '{username}' / '{user_role}'")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Unauthorized: Token signature has expired.")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Unauthorized: Invalid token ({e})")
     if user_role not in ROLE_COLLECTIONS:
         raise HTTPException(status_code=400, detail="Invalid user role")
     return username, user_role
@@ -416,7 +421,7 @@ async def chat_stream(req: ChatRequest, authorization: Optional[str] = Header(No
                     yield f"data: {json.dumps({'type': 'chunk', 'text': msg})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'sql_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
                     return
-            answer = await loop.run_in_executor(None, sql_rag_chain, question)
+            answer = await loop.run_in_executor(None, sql_rag_chain, question, user_role)
             log_query(username, user_role, original_question, "sql_rag")
             yield f"data: {json.dumps({'type': 'chunk', 'text': answer})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'sql_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"

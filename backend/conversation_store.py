@@ -32,7 +32,7 @@ def get_history(username: str) -> list:
     rows = c.execute(
         """SELECT msg_role, content FROM history
            WHERE username = ?
-           ORDER BY created_at DESC
+           ORDER BY id DESC
            LIMIT ?""",
         (username, MAX_TURNS * 2),
     ).fetchall()

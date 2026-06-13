@@ -253,7 +253,14 @@ export default function Home() {
 
     const formatInline = (str) => {
       if (typeof str !== 'string') return str;
-      let f = str.replace(/\*\*([^\s*](?:[^*]*?[^\s*])?)\*\*/g, '<strong>$1</strong>');
+      // Escape HTML characters first to prevent XSS
+      const escaped = str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+      let f = escaped.replace(/\*\*([^\s*](?:[^*]*?[^\s*])?)\*\*/g, '<strong>$1</strong>');
       f = f.replace(/\*([^\s*](?:[^*]*?[^\s*])?)\*/g, '<em>$1</em>');
       f = f.replace(/`([^`]+?)`/g, '<code>$1</code>');
       return <span dangerouslySetInnerHTML={{ __html: f }} />;

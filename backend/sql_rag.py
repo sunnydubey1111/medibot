@@ -112,7 +112,7 @@ def clean_sql_query(raw_sql: str) -> str:
     sql = sql.replace('`', '')
     return sql.strip()
 
-def execute_sql(query: str) -> str:
+def execute_sql(query: str, user_role: str) -> str:
     """
     Executes a SQL query against the SQLite database and returns the result as a string/formatted list of rows.
     """
@@ -142,6 +142,20 @@ def execute_sql(query: str) -> str:
         
     try:
         conn = sqlite3.connect(DB_PATH)
+        
+        # Configure SQLite Authorizer for Table-Level RBAC
+        allowed_tables = ROLE_ALLOWED_TABLES.get(user_role, [])
+        def authorizer(action_code, arg1, arg2, dbname, source):
+            # SQLITE_READ is action_code 20
+            if action_code == 20:
+                if arg1 in ("sqlite_master", "sqlite_schema", "sqlite_temp_master", "sqlite_temp_schema"):
+                    return 0 # SQLITE_OK
+                if arg1 not in allowed_tables:
+                    return 1 # SQLITE_DENY
+            return 0 # SQLITE_OK
+            
+        conn.set_authorizer(authorizer)
+        
         # Configure row factory to get dictionary-like outputs
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -235,7 +249,7 @@ def _check_table_access(sql_query: str, user_role: str) -> str | None:
     return None
 
 
-def sql_rag_chain(question: str, user_role: str = "admin") -> str:
+def sql_rag_chain(question: str, user_role: str) -> str:
     """
     Translates the question to SQL, executes it, and outputs a natural language answer.
     """
@@ -268,7 +282,7 @@ def sql_rag_chain(question: str, user_role: str = "admin") -> str:
         return access_error
 
     # Step 3: Execute SQL against database
-    db_result = execute_sql(sql_query)
+    db_result = execute_sql(sql_query, user_role)
     print(f"[SQL RAG] Execution result: {db_result[:500]}...")
     
     # Step 4: Generate natural language response

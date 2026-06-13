@@ -11,11 +11,11 @@ const DEMO_ACCOUNTS = [
 ];
 
 const ROLE_EMOJIS = {
-  doctor:            '👨‍⚕️',
-  nurse:             '👩‍⚕️',
+  doctor:            '🩺',
+  nurse:             '💊',
   billing_executive: '💼',
   technician:        '🔧',
-  admin:             '🛡️',
+  admin:             '🛡',
 };
 
 const COLLECTION_EMOJIS = {

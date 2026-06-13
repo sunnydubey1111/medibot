@@ -33,35 +33,26 @@ The following diagram illustrates the query routing and security filtering flow:
 
 ```mermaid
 graph TD
-    A[User clicks Demo Account on Login Screen] --> B[POST /login with username + password]
-    B --> C{Valid credentials?}
-    C -- "No" --> D[HTTP 401 Unauthorized]
-    C -- "Yes" --> E[Issue signed HS256 JWT\n role + username + exp embedded]
+    A[User selects Demo Account] --> B[POST /login → JWT issued with role embedded]
+    B --> C[User submits question\n Bearer token sent on every request]
 
-    E --> F[Frontend stores token\n sends as Bearer header on every request]
-    F --> G{Verify JWT signature\n on POST /chat}
-    G -- "Invalid / Expired" --> H[HTTP 401 Unauthorized]
-    G -- "Valid" --> I
+    C --> D{AuthZ Layer 1\n Keyword Pre-Check}
+    D -- "Restricted keyword" --> E[Permission denial message returned]
+    D -- "Pass" --> F
 
-    I[User Question + Verified Role] --> J
+    F{Router: Analytical or DB question?}
+    F -- "Yes - SQL RAG" --> G{Role = billing_executive or admin?}
+    G -- "No" --> H[Block: SQL RAG not permitted for this role]
+    G -- "Yes" --> I[SQL RAG: LLM → SQL → SQLite → NL Answer]
 
-    J{AuthZ Layer 1\n Keyword Pre-Check}
-    J -- "Restricted keyword detected" --> K[Block: Return permission denial message]
-    J -- "Pass" --> L
+    F -- "No - Hybrid RAG" --> J[Qdrant Hybrid Search]
+    J --> K[Prefetch Dense + AuthZ Layer 2\n filter: access_roles = user_role]
+    J --> L[Prefetch Sparse BM25 + AuthZ Layer 2\n filter: access_roles = user_role]
+    K & L --> M[Reciprocal Rank Fusion RRF]
+    M --> N[Cross-Encoder Reranking: Top-10 → Top-3]
+    N --> O[LLM: Generate Answer with Source Citations]
 
-    L{Router: Analytical or DB question?}
-    L -- "Yes - SQL RAG" --> M{AuthZ Layer 3\n Role = billing_executive or admin?}
-    M -- "No" --> N[Block: SQL RAG not permitted for this role]
-    M -- "Yes" --> O[SQL RAG: LLM → SQL → SQLite → NL Answer]
-
-    L -- "No - Hybrid RAG" --> P[Qdrant Hybrid Search]
-    P --> Q[AuthZ Layer 2: Prefetch Dense\n filter: access_roles = user_role]
-    P --> R[AuthZ Layer 2: Prefetch Sparse BM25\n filter: access_roles = user_role]
-    Q & R --> S[Reciprocal Rank Fusion RRF]
-    S --> T[Cross-Encoder Reranking: Top-10 → Top-3]
-    T --> U[LLM: Generate Answer with Source Citations]
-
-    O & U & K & N --> V[Chat Response returned to Frontend]
+    I & O & E & H --> P[Chat Response returned to Frontend]
 ```
 
 ---

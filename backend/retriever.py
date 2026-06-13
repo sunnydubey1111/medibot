@@ -13,6 +13,29 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 # Import BM25Encoder from ingest
 from backend.ingest import BM25Encoder
 
+
+def _generate_hypothetical_answer(query: str) -> str:
+    """
+    HyDE: asks the LLM to write a hypothetical document excerpt that would answer
+    the query, then uses that richer text for dense vector encoding.
+    Falls back to the original query if the LLM is unavailable.
+    """
+    if not os.getenv("GEMINI_API_KEY"):
+        return query
+    try:
+        from backend.llm_client import call_llm
+        system = (
+            "You are a medical document database. Given a clinical question, write a concise "
+            "2-3 sentence excerpt from a relevant medical document that would directly answer it. "
+            "Write in third person as if quoting the document. Do not use 'I'."
+        )
+        result = call_llm(query, system_instruction=system)
+        if not result or any(x in result.lower() for x in ["oops!", "[mock", "trouble connecting"]):
+            return query
+        return result
+    except Exception:
+        return query
+
 # Global variables to cache models
 _dense_model = None
 _cross_encoder = None
@@ -66,10 +89,11 @@ def retrieve_hybrid_and_rerank(query: str, user_role: str, top_k: int = 10, fina
     cross_encoder = get_cross_encoder()
     bm25_encoder = get_bm25_encoder()
     
-    # 1. Generate dense query vector
-    query_dense = dense_model.encode(query).tolist()
-    
-    # 2. Generate sparse query vector
+    # 1. HyDE: encode a hypothetical answer for richer dense coverage
+    hyde_doc = _generate_hypothetical_answer(query)
+    query_dense = dense_model.encode(hyde_doc).tolist()
+
+    # 2. Sparse BM25 uses the original query for exact term matching
     sparse_indices, sparse_values = bm25_encoder.encode_query(query)
     
     # 3. Create the RBAC metadata filter

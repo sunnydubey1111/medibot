@@ -2,28 +2,31 @@ import os
 import sys
 import time
 import jwt
+import json
+import asyncio
+import bcrypt
+import queue as q_module
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 
-# Ensure stdout uses UTF-8 to avoid encoding errors on Windows
 sys.stdout.reconfigure(encoding='utf-8')
 
-# Load environment variables
 current_dir = os.path.dirname(os.path.abspath(__file__))
 workspace_root = os.path.dirname(current_dir)
 load_dotenv(os.path.join(workspace_root, ".env"))
 
-# Import RAG and SQL pipelines
-from backend.llm_client import call_llm
+from backend.llm_client import call_llm, stream_llm
 from backend.retriever import retrieve_hybrid_and_rerank
 from backend.sql_rag import sql_rag_chain
+from backend.audit_logger import log_query
+from backend.conversation_store import get_history, save_turn
 
-app = FastAPI(title="MediBot Backend", version="1.0.0")
+app = FastAPI(title="MediBot Backend", version="2.0.0")
 
-# Enable CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,131 +35,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Demo User Credentials and Roles
+# --- Demo Users — bcrypt-hashed passwords (hashed once at startup) ---
+print("Hashing demo passwords...")
+def _h(pw: str) -> bytes:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=10))
+
 DEMO_USERS = {
-    "dr.mehta": {"password": "password", "role": "doctor", "name": "Dr. Mehta (Clinical)"},
-    "nurse.priya": {"password": "password", "role": "nurse", "name": "Nurse Priya (Clinical)"},
-    "billing.ravi": {"password": "password", "role": "billing_executive", "name": "Ravi (Billing)"},
-    "tech.anand": {"password": "password", "role": "technician", "name": "Anand (Technician)"},
-    "admin.sys": {"password": "password", "role": "admin", "name": "Admin System"}
+    "dr.mehta":     {"password_hash": _h("password"), "role": "doctor",            "name": "Dr. Mehta (Clinical)"},
+    "nurse.priya":  {"password_hash": _h("password"), "role": "nurse",             "name": "Nurse Priya (Clinical)"},
+    "billing.ravi": {"password_hash": _h("password"), "role": "billing_executive", "name": "Ravi (Billing)"},
+    "tech.anand":   {"password_hash": _h("password"), "role": "technician",        "name": "Anand (Technician)"},
+    "admin.sys":    {"password_hash": _h("password"), "role": "admin",             "name": "Admin System"},
 }
+print("Demo passwords hashed.")
 
 ROLE_COLLECTIONS = {
-    "doctor": ["general", "clinical", "nursing"],
-    "nurse": ["general", "nursing"],
+    "doctor":            ["general", "clinical", "nursing"],
+    "nurse":             ["general", "nursing"],
     "billing_executive": ["general", "billing"],
-    "technician": ["general", "equipment"],
-    "admin": ["general", "clinical", "nursing", "billing", "equipment"]
+    "technician":        ["general", "equipment"],
+    "admin":             ["general", "clinical", "nursing", "billing", "equipment"],
 }
 
-def check_restricted_keywords(question: str, role: str) -> Optional[str]:
-    q = question.lower()
-    allowed_cols = ROLE_COLLECTIONS.get(role, [])
-    
-    # 1. Billing keywords
-    billing_keywords = ["billing code", "icd-10", "icd10", "reimbursement", "pre-authorisation", "preauthorisation", "cashless", "claim", "insurer", "package rate", "billing guide", "billing doc"]
-    if "billing" not in allowed_cols:
-        if any(kw in q for kw in billing_keywords):
-            return f"As a {role.replace('_', ' ')}, you do not have permission to access billing and insurance guides. Please contact the Billing Department or log in with the Billing Executive role."
-            
-    # 2. Clinical keywords
-    clinical_keywords = ["dosage", "drug formulary", "treatment protocol", "coronary", "cardiac", "infarction", "nstemi", "diagnostics", "troponin", "medicine", "prescribe", "treatment steps", "drug dosage", "clinical doc"]
-    if "clinical" not in allowed_cols:
-        if any(kw in q for kw in clinical_keywords):
-            return f"As a {role.replace('_', ' ')}, you do not have permission to access clinical protocols and drug formularies. Please consult a doctor or log in with the Doctor role."
-            
-    # 3. Nursing keywords
-    nursing_keywords = ["nursing procedure", "icu guideline", "hand hygiene", "ventilator bundle", "patient fall", "patient monitoring", "icu protocol", "nursing doc"]
-    if "nursing" not in allowed_cols:
-        if any(kw in q for kw in nursing_keywords):
-            return f"As a {role.replace('_', ' ')}, you do not have permission to access nursing procedures or ICU guidelines. Please contact the nursing staff or log in with the Nurse role."
-            
-    # 4. Equipment keywords
-    equipment_keywords = ["sterilpro", "driveflow", "autoclave", "infusion pump", "calibration", "maintenance checklist", "fault code", "troubleshoot", "equipment manual", "equipment doc"]
-    if "equipment" not in allowed_cols:
-        if any(kw in q for kw in equipment_keywords):
-            return f"As a {role.replace('_', ' ')}, you do not have permission to access biomedical equipment manuals or maintenance logs. Please contact the Biomedical Engineering department or log in with the Technician role."
-            
-    return None
-
-LAST_QUERIES = {}  # keyed by username to prevent cross-user context leakage
-
-# Per-user rate limiting: max 10 requests per 60 seconds
-RATE_LIMIT_STORE: Dict[str, list] = {}
-RATE_LIMIT_MAX = 10
-RATE_LIMIT_WINDOW = 60
-
-def check_rate_limit(username: str):
-    now = time.time()
-    timestamps = RATE_LIMIT_STORE.get(username, [])
-    timestamps = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
-    if len(timestamps) >= RATE_LIMIT_MAX:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: maximum {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW} seconds. Please wait before sending more messages."
-        )
-    timestamps.append(now)
-    RATE_LIMIT_STORE[username] = timestamps
-
-# Per-user conversation history for multi-turn context (capped at last 5 turns)
-CONVERSATION_HISTORY: Dict[str, list] = {}
-HISTORY_MAX_TURNS = 5
-
-def get_user_history(username: str) -> list:
-    return CONVERSATION_HISTORY.get(username, [])
-
-def update_user_history(username: str, user_message: str, bot_answer: str):
-    history = CONVERSATION_HISTORY.get(username, [])
-    history.append({"role": "user", "parts": [user_message]})
-    history.append({"role": "model", "parts": [bot_answer]})
-    # Keep only the last N turns to avoid unbounded memory growth
-    max_messages = HISTORY_MAX_TURNS * 2
-    if len(history) > max_messages:
-        history = history[-max_messages:]
-    CONVERSATION_HISTORY[username] = history
-
-def get_combined_query(question: str, username: str) -> str:
-    q = question.lower().strip().rstrip("?.!")
-
-    followup_keywords = [
-        "elaborate", "elaborate more", "tell me more", "explain more", "more details",
-        "more info", "details", "explain", "go on", "elaborate further", "further details",
-        "substantial info", "give me more info", "what else", "tell me more about this",
-        "elaborate more details", "can you elaborate", "can you explain", "elaborate more",
-        "elaborate more on this", "elaborate on this"
-    ]
-
-    # If it's a follow-up and we have a previous query for this specific user
-    if (q in followup_keywords or len(q.split()) <= 2) and username in LAST_QUERIES:
-        prev_query = LAST_QUERIES[username]
-        if prev_query:
-            return f"{prev_query} (elaborate more details)"
-
-    if len(q.split()) > 2:
-        LAST_QUERIES[username] = question
-
-    return question
-
-CLASSIFICATION_SYSTEM_INSTRUCTION = """
-You are an intelligent query routing system for MediBot. Your job is to classify a healthcare staff member's query into one of two categories:
-1. "sql_rag": If the question is analytical, statistics-oriented, numbers-oriented, or refers to database records. Examples:
-   - Counting claims, open tickets, tickets in a location, total claimed amounts, status of a ticket, resolved date, average claim size.
-   - Any question about claims, insurers, patient names, departments billing numbers, equipment maintenance tickets, status, costs, counts, names in database tables.
-2. "hybrid_rag": If the question asks for conceptual knowledge, clinical protocols, drug details, procedures, policy guidelines, handbooks, FAQs. Examples:
-   - How to treat a patient, drug dosage, nursing calibration instructions, HR policies, leave application procedures, general FAQs.
-
-Respond with ONLY one of these two strings: "sql_rag" or "hybrid_rag". Do not write any other text, markdown, or formatting.
-"""
-
-RAG_ANSWER_SYSTEM_INSTRUCTION = """
-You are MediBot, an intelligent clinical assistant for MediAssist Health Network.
-You are given the user's question and the top retrieved passages from the authorized document collections.
-Your job is to provide a comprehensive, accurate, and helpful response.
-Cite the source documents and section headings clearly in your text (e.g. "According to the HR Leave Policy...").
-If the provided passages do not contain the answer, state that you cannot find the answer in the authorized documents, but suggest who or which department they can contact.
-Maintain a professional, helpful, and clinically safe tone.
-"""
-
+# --- JWT ---
 JWT_SECRET = os.getenv("JWT_SECRET", "mediassist_secret_key_12345_secure_rag")
 
 def encode_jwt(payload: dict) -> str:
@@ -165,15 +66,153 @@ def encode_jwt(payload: dict) -> str:
 def decode_jwt(token: str) -> dict:
     return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 
+# --- Per-user rate limiting (10 req / 60 s) ---
+RATE_LIMIT_STORE: Dict[str, list] = {}
+RATE_LIMIT_MAX = 10
+RATE_LIMIT_WINDOW = 60
+
+def check_rate_limit(username: str):
+    now = time.time()
+    ts = [t for t in RATE_LIMIT_STORE.get(username, []) if now - t < RATE_LIMIT_WINDOW]
+    if len(ts) >= RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW}s.",
+        )
+    ts.append(now)
+    RATE_LIMIT_STORE[username] = ts
+
+# --- Follow-up query expansion ---
+LAST_QUERIES: Dict[str, str] = {}
+
+def get_combined_query(question: str, username: str) -> str:
+    q = question.lower().strip().rstrip("?.!")
+    followups = [
+        "elaborate", "elaborate more", "tell me more", "explain more", "more details",
+        "more info", "details", "explain", "go on", "elaborate further", "further details",
+        "substantial info", "give me more info", "what else", "tell me more about this",
+        "elaborate more details", "can you elaborate", "can you explain",
+        "elaborate more on this", "elaborate on this",
+    ]
+    if (q in followups or len(q.split()) <= 2) and username in LAST_QUERIES:
+        prev = LAST_QUERIES[username]
+        if prev:
+            return f"{prev} (elaborate more details)"
+    if len(q.split()) > 2:
+        LAST_QUERIES[username] = question
+    return question
+
+# --- RBAC keyword pre-check ---
+def check_restricted_keywords(question: str, role: str) -> Optional[str]:
+    q = question.lower()
+    cols = ROLE_COLLECTIONS.get(role, [])
+
+    if "billing" not in cols and any(kw in q for kw in [
+        "billing code", "icd-10", "icd10", "reimbursement", "pre-authorisation",
+        "preauthorisation", "cashless", "claim", "insurer", "package rate",
+        "billing guide", "billing doc",
+    ]):
+        return f"As a {role.replace('_', ' ')}, you do not have permission to access billing and insurance guides. Please contact the Billing Department or log in with the Billing Executive role."
+
+    if "clinical" not in cols and any(kw in q for kw in [
+        "dosage", "drug formulary", "treatment protocol", "coronary", "cardiac",
+        "infarction", "nstemi", "diagnostics", "troponin", "medicine", "prescribe",
+        "treatment steps", "drug dosage", "clinical doc",
+    ]):
+        return f"As a {role.replace('_', ' ')}, you do not have permission to access clinical protocols and drug formularies. Please consult a doctor or log in with the Doctor role."
+
+    if "nursing" not in cols and any(kw in q for kw in [
+        "nursing procedure", "icu guideline", "hand hygiene", "ventilator bundle",
+        "patient fall", "patient monitoring", "icu protocol", "nursing doc",
+    ]):
+        return f"As a {role.replace('_', ' ')}, you do not have permission to access nursing procedures or ICU guidelines. Please contact nursing staff or log in with the Nurse role."
+
+    if "equipment" not in cols and any(kw in q for kw in [
+        "sterilpro", "driveflow", "autoclave", "infusion pump", "calibration",
+        "maintenance checklist", "fault code", "troubleshoot", "equipment manual",
+        "equipment doc",
+    ]):
+        return f"As a {role.replace('_', ' ')}, you do not have permission to access biomedical equipment manuals. Please contact Biomedical Engineering or log in with the Technician role."
+
+    return None
+
+# --- LLM system prompts ---
+CLASSIFICATION_SYSTEM_INSTRUCTION = """
+You are an intelligent query routing system for MediBot. Classify a healthcare staff member's query:
+1. "sql_rag": analytical, statistics, counts, totals, claims, tickets, database records
+2. "hybrid_rag": clinical protocols, drug details, procedures, policy guidelines, FAQs
+
+Respond with ONLY one of: "sql_rag" or "hybrid_rag". No other text.
+"""
+
+RAG_ANSWER_SYSTEM_INSTRUCTION = """
+You are MediBot, an intelligent clinical assistant for MediAssist Health Network.
+Given the user's question and retrieved passages, provide a comprehensive, accurate response.
+Cite source documents and section headings (e.g. "According to the HR Leave Policy...").
+If passages don't contain the answer, say so and suggest who to contact.
+Maintain a professional, helpful, and clinically safe tone.
+"""
+
+# --- Query router ---
+def route_query(question: str) -> str:
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    def _kw():
+        ql = question.lower()
+        if any(k in ql for k in ["how many", "total", "amount", "count", "claim", "ticket",
+                                  "escalated", "approved", "status of", "average", "sum",
+                                  "raised", "resolved", "pending", "insurer", "delete", "drop table", "logs"]):
+            return "sql_rag"
+        return "hybrid_rag"
+
+    if not api_key:
+        return _kw()
+    try:
+        raw = call_llm(
+            f"Classify the following query:\nQuery: {question}",
+            system_instruction=CLASSIFICATION_SYSTEM_INSTRUCTION,
+        ).strip().lower()
+        if any(x in raw for x in ["oops!", "trouble connecting", "spending cap", "exceeded"]):
+            return _kw()
+        return "sql_rag" if "sql" in raw else "hybrid_rag"
+    except Exception:
+        return _kw()
+
+# --- Confidence helper ---
+def _confidence(score: float):
+    label = "high" if score > 0 else "medium" if score > -5 else "low"
+    return round(score, 4), label
+
+# --- Auth helper ---
+def _extract_auth(user_role: str, authorization: Optional[str]):
+    username = "anonymous"
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+        try:
+            payload = decode_jwt(token)
+            user_role = payload.get("role", user_role).lower()
+            username = payload.get("username", "anonymous")
+            print(f"[JWT] '{username}' / '{user_role}'")
+        except Exception as e:
+            raise HTTPException(status_code=401, detail=f"Unauthorized: Invalid token ({e})")
+    if user_role not in ROLE_COLLECTIONS:
+        raise HTTPException(status_code=400, detail="Invalid user role")
+    return username, user_role
+
+# --- Pydantic models ---
 class LoginRequest(BaseModel):
     username: str
     password: str
 
 class LoginResponse(BaseModel):
     token: str
+    refresh_token: str
     username: str
     role: str
     name: str
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 class ChatRequest(BaseModel):
     question: str
@@ -184,216 +223,238 @@ class ChatResponse(BaseModel):
     sources: List[Dict[str, Any]]
     retrieval_type: str
     role: str
+    confidence_score: Optional[float] = None
+    confidence_label: Optional[str] = None
 
-def route_query(question: str) -> str:
-    """
-    Classifies the incoming question into either 'sql_rag' or 'hybrid_rag'.
-    Uses LLM if key is set, falls back to keyword matching otherwise.
-    """
-    api_key = os.getenv("GEMINI_API_KEY")
-    
-    def keyword_fallback():
-        q_lower = question.lower()
-        sql_keywords = [
-            "how many", "total", "amount", "count", "claim", "ticket", 
-            "escalated", "approved", "status of", "average", "sum", 
-            "raised", "resolved", "pending", "insurer", "delete", "drop table", "logs"
-        ]
-        if any(kw in q_lower for kw in sql_keywords):
-            return "sql_rag"
-        return "hybrid_rag"
-        
-    if not api_key:
-        return keyword_fallback()
-        
-    try:
-        raw_class = call_llm(
-            prompt=f"Classify the following query:\nQuery: {question}",
-            system_instruction=CLASSIFICATION_SYSTEM_INSTRUCTION
-        ).strip().lower()
-        
-        if "oops!" in raw_class or "trouble connecting" in raw_class or "spending cap" in raw_class or "exceeded" in raw_class:
-            return keyword_fallback()
-            
-        if "sql" in raw_class:
-            return "sql_rag"
-        return "hybrid_rag"
-    except Exception:
-        return keyword_fallback()
 
+# ─────────────────────────────────────────────
+#  Endpoints
+# ─────────────────────────────────────────────
 
 @app.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest):
     user = DEMO_USERS.get(req.username.lower())
-    if not user or user["password"] != req.password:
+    if not user or not bcrypt.checkpw(req.password.encode(), user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    
-    # Generate real JWT token containing user metadata
-    payload = {
-        "username": req.username.lower(),
-        "role": user["role"],
-        "name": user["name"],
-        "exp": int(time.time()) + 86400  # Token valid for 24 hours
-    }
-    token = encode_jwt(payload)
-    
+
+    now = int(time.time())
+    access = encode_jwt({
+        "username": req.username.lower(), "role": user["role"],
+        "name": user["name"], "type": "access", "exp": now + 3600,
+    })
+    refresh = encode_jwt({
+        "username": req.username.lower(), "role": user["role"],
+        "name": user["name"], "type": "refresh", "exp": now + 604800,
+    })
     return LoginResponse(
-        token=token,
-        username=req.username.lower(),
-        role=user["role"],
-        name=user["name"]
+        token=access, refresh_token=refresh,
+        username=req.username.lower(), role=user["role"], name=user["name"],
     )
+
+
+@app.post("/refresh")
+def refresh_token(req: RefreshRequest):
+    try:
+        payload = decode_jwt(req.refresh_token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token has expired. Please log in again.")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid refresh token: {e}")
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type.")
+    new_token = encode_jwt({
+        "username": payload["username"], "role": payload["role"],
+        "name": payload["name"], "type": "access", "exp": int(time.time()) + 3600,
+    })
+    return {"token": new_token}
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
     user_role = req.role.lower()
-    
-    # Extract and verify JWT token from Authorization header if present
-    username = "anonymous"
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ")[1]
-        try:
-            payload = decode_jwt(token)
-            user_role = payload.get("role", user_role).lower()
-            username = payload.get("username", "anonymous")
-            print(f"[JWT Auth] Verified token for user '{username}' with role '{user_role}'")
-        except Exception as e:
-            raise HTTPException(status_code=401, detail=f"Unauthorized: Invalid token ({str(e)})")
-    if user_role not in ROLE_COLLECTIONS:
-        raise HTTPException(status_code=400, detail="Invalid user role")
-
+    username, user_role = _extract_auth(user_role, authorization)
     check_rate_limit(username)
 
     original_question = req.question
     question = get_combined_query(original_question, username)
-    
-    # 0. Check for role-based restricted keyword queries first
-    restriction_message = check_restricted_keywords(question, user_role)
-    if restriction_message:
-        return ChatResponse(
-            answer=restriction_message,
-            sources=[],
-            retrieval_type="hybrid_rag",
-            role=user_role
-        )
-    
-    # 1. Route the query (SQL vs Document RAG)
-    routed_type = route_query(question)
-    print(f"\n[CHAT API] Question: '{original_question}' (Combined: '{question}') | Role: '{user_role}' | Routed Type: '{routed_type}'")
-    
-    # 2. Process SQL RAG
-    if routed_type == "sql_rag":
-        # RBAC Check: SQL RAG is only for billing_executive and admin
-        if user_role not in ["billing_executive", "admin"]:
-            # Format custom RBAC rejection response
-            refusal_message = f"As a {user_role.replace('_', ' ')}, I don't have access to search database analytics or claims statistics. I can only search guide documents and policies authorized for your role, such as {', '.join(ROLE_COLLECTIONS[user_role])}."
-            return ChatResponse(
-                answer=refusal_message,
-                sources=[],
-                retrieval_type="sql_rag",
-                role=user_role
-            )
-            
-        # Execute SQL RAG chain
-        answer = sql_rag_chain(question)
-        return ChatResponse(
-            answer=answer,
-            sources=[],
-            retrieval_type="sql_rag",
-            role=user_role
-        )
-        
-    # 3. Process Hybrid Document RAG
-    else:
-        # Retrieve top chunks with retrieval-layer RBAC filtering
-        try:
-            retrieved_chunks = retrieve_hybrid_and_rerank(question, user_role)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=503, detail=f"Search index not ready. Please run ingestion first. ({str(e)})")
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Document search unavailable: {str(e)}")
 
-        # If no chunks returned, inform the user they don't have access or no matches
-        if not retrieved_chunks:
-            refusal_message = f"I couldn't find any relevant information in the guides and policies you have permission to view ({', '.join(ROLE_COLLECTIONS[user_role])}). If you require clinical protocols, billing guides, or equipment manuals, please log in with the appropriate role."
-            return ChatResponse(
-                answer=refusal_message,
-                sources=[],
-                retrieval_type="hybrid_rag",
-                role=user_role
+    restriction = check_restricted_keywords(question, user_role)
+    if restriction:
+        log_query(username, user_role, original_question, "blocked", blocked=True)
+        return ChatResponse(answer=restriction, sources=[], retrieval_type="hybrid_rag", role=user_role)
+
+    routed_type = route_query(question)
+    print(f"\n[CHAT] '{original_question}' | {user_role} | {routed_type}")
+
+    if routed_type == "sql_rag":
+        if user_role not in ["billing_executive", "admin"]:
+            msg = (f"As a {user_role.replace('_', ' ')}, I don't have access to database analytics. "
+                   f"I can only search: {', '.join(ROLE_COLLECTIONS[user_role])}.")
+            log_query(username, user_role, original_question, "sql_rag", blocked=True)
+            return ChatResponse(answer=msg, sources=[], retrieval_type="sql_rag", role=user_role)
+        answer = sql_rag_chain(question)
+        log_query(username, user_role, original_question, "sql_rag")
+        return ChatResponse(answer=answer, sources=[], retrieval_type="sql_rag", role=user_role)
+
+    try:
+        retrieved_chunks = retrieve_hybrid_and_rerank(question, user_role)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=f"Search index not ready — run ingest.py first. ({e})")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Document search unavailable: {e}")
+
+    if not retrieved_chunks:
+        msg = f"I couldn't find relevant information in your permitted collections ({', '.join(ROLE_COLLECTIONS[user_role])})."
+        return ChatResponse(answer=msg, sources=[], retrieval_type="hybrid_rag", role=user_role)
+
+    sources = [{"source_document": c["source_document"], "section_title": c["section_title"],
+                "collection": c["collection"]} for c in retrieved_chunks]
+    confidence_score, confidence_label = _confidence(retrieved_chunks[0]["score"])
+
+    context_str = "\n\n".join(
+        f"--- Chunk {i+1} (Source: {c['source_document']} | Section: {c['section_title']} | Collection: {c['collection']}) ---\n{c['embedded_text']}"
+        for i, c in enumerate(retrieved_chunks)
+    )
+    prompt_rag = f"User Question: {question}\n\nRetrieved Passages:\n{context_str}\n\nAnswer the question using the passages above:"
+
+    try:
+        answer = call_llm(prompt_rag, system_instruction=RAG_ANSWER_SYSTEM_INSTRUCTION, history=get_history(username))
+    except Exception:
+        answer = ""
+
+    if not answer or any(x in answer.lower() for x in ["[mock", "oops!", "trouble connecting", "spending cap", "exceeded"]):
+        relevant = [c for c in retrieved_chunks if c["score"] >= -10.5]
+        if relevant:
+            answer = "\n\n---\n\n".join(
+                f"### From **{c['source_document']}** (Section: *{c['section_title']}*):\n\n{c['text'].strip()}"
+                for c in relevant[:3]
             )
-            
-        # Format sources to return
-        sources = []
-        for chunk in retrieved_chunks:
-            sources.append({
-                "source_document": chunk["source_document"],
-                "section_title": chunk["section_title"],
-                "collection": chunk["collection"]
-            })
-            
-        # Combine chunks text as context
-        context_blocks = []
-        for idx, chunk in enumerate(retrieved_chunks):
-            context_blocks.append(f"--- Chunk {idx+1} (Source: {chunk['source_document']} | Section: {chunk['section_title']} | Collection: {chunk['collection']}) ---\n{chunk['embedded_text']}")
-            
-        context_str = "\n\n".join(context_blocks)
-        
-        # Call LLM to format natural language answer
-        prompt_rag = f"""
-        User Question: {question}
-        
-        Retrieved Passages:
-        {context_str}
-        
-        Answer the question using the passages above:
-        """
-        
+        else:
+            answer = f"I couldn't find relevant information in your permitted collections ({', '.join(ROLE_COLLECTIONS[user_role])})."
+
+    save_turn(username, question, answer)
+    log_query(username, user_role, original_question, "hybrid_rag", confidence_score)
+
+    return ChatResponse(
+        answer=answer, sources=sources, retrieval_type="hybrid_rag", role=user_role,
+        confidence_score=confidence_score, confidence_label=confidence_label,
+    )
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest, authorization: Optional[str] = Header(None)):
+    """Streaming variant of /chat — returns Server-Sent Events."""
+    user_role = req.role.lower()
+    username, user_role = _extract_auth(user_role, authorization)
+    check_rate_limit(username)
+
+    original_question = req.question
+    question = get_combined_query(original_question, username)
+
+    async def event_stream():
+        loop = asyncio.get_running_loop()
+
+        restriction = check_restricted_keywords(question, user_role)
+        if restriction:
+            log_query(username, user_role, original_question, "blocked", blocked=True)
+            yield f"data: {json.dumps({'type': 'chunk', 'text': restriction})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'hybrid_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
+            return
+
+        routed_type = await loop.run_in_executor(None, route_query, question)
+        print(f"\n[STREAM] '{original_question}' | {user_role} | {routed_type}")
+
+        if routed_type == "sql_rag":
+            if user_role not in ["billing_executive", "admin"]:
+                msg = (f"As a {user_role.replace('_', ' ')}, I don't have access to database analytics. "
+                       f"I can only search: {', '.join(ROLE_COLLECTIONS[user_role])}.")
+                log_query(username, user_role, original_question, "sql_rag", blocked=True)
+                yield f"data: {json.dumps({'type': 'chunk', 'text': msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'sql_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
+                return
+            answer = await loop.run_in_executor(None, sql_rag_chain, question)
+            log_query(username, user_role, original_question, "sql_rag")
+            yield f"data: {json.dumps({'type': 'chunk', 'text': answer})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'sql_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
+            return
+
         try:
-            answer = call_llm(
-                prompt=prompt_rag,
-                system_instruction=RAG_ANSWER_SYSTEM_INSTRUCTION,
-                history=get_user_history(username)
-            )
+            retrieved_chunks = await loop.run_in_executor(None, retrieve_hybrid_and_rerank, question, user_role)
+        except FileNotFoundError:
+            yield f"data: {json.dumps({'type': 'error', 'text': 'Search index not ready. Please run backend/ingest.py first.'})}\n\n"
+            return
         except Exception:
-            answer = ""
-            
-        if not answer or "[mock" in answer.lower() or "oops!" in answer.lower() or "trouble connecting" in answer.lower() or "spending cap" in answer.lower() or "exceeded" in answer.lower():
-            # Check if the retrieved chunk is actually relevant (score >= -10.5)
-            top_chunk = retrieved_chunks[0]
-            if top_chunk["score"] < -10.5:
-                answer = f"I couldn't find any relevant information in the guides and policies you have permission to view ({', '.join(ROLE_COLLECTIONS[user_role])}). If you require clinical protocols, billing guides, or equipment manuals, please log in with the appropriate role."
-            else:
-                # Compile substantial, complete information from all relevant retrieved chunks
-                relevant_chunks = [c for c in retrieved_chunks if c["score"] >= -10.5]
-                answer_parts = []
-                for idx, chunk in enumerate(relevant_chunks[:3]): # Use up to top 3 relevant chunks
-                    doc = chunk["source_document"]
-                    sec = chunk["section_title"]
-                    text = chunk["text"].strip()
-                    answer_parts.append(f"### From **{doc}** (Section: *{sec}*):\n\n{text}")
-                
-                answer = "\n\n---\n\n".join(answer_parts)
-            
-        update_user_history(username, question, answer)
-        return ChatResponse(
-            answer=answer,
-            sources=sources,
-            retrieval_type="hybrid_rag",
-            role=user_role
+            yield f"data: {json.dumps({'type': 'error', 'text': 'Document search is currently unavailable.'})}\n\n"
+            return
+
+        if not retrieved_chunks:
+            msg = f"I couldn't find relevant information in your permitted collections ({', '.join(ROLE_COLLECTIONS[user_role])})."
+            yield f"data: {json.dumps({'type': 'chunk', 'text': msg})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'sources': [], 'retrieval_type': 'hybrid_rag', 'confidence_score': None, 'confidence_label': None})}\n\n"
+            return
+
+        sources = [{"source_document": c["source_document"], "section_title": c["section_title"],
+                    "collection": c["collection"]} for c in retrieved_chunks]
+        confidence_score, confidence_label = _confidence(retrieved_chunks[0]["score"])
+
+        context_str = "\n\n".join(
+            f"--- Chunk {i+1} (Source: {c['source_document']} | Section: {c['section_title']}) ---\n{c['embedded_text']}"
+            for i, c in enumerate(retrieved_chunks)
         )
+        prompt_rag = f"User Question: {question}\n\nRetrieved Passages:\n{context_str}\n\nAnswer the question using the passages above:"
+        history = await loop.run_in_executor(None, get_history, username)
+
+        # Stream LLM via a thread-safe queue so the async generator can yield chunks in real time
+        chunk_queue = q_module.Queue()
+
+        def _run_stream():
+            try:
+                for text in stream_llm(prompt_rag, RAG_ANSWER_SYSTEM_INSTRUCTION, history):
+                    chunk_queue.put(text)
+            except Exception:
+                chunk_queue.put("Oops! I'm having trouble connecting to my system right now.")
+            finally:
+                chunk_queue.put(None)
+
+        stream_future = loop.run_in_executor(None, _run_stream)
+        full_answer = ""
+
+        while True:
+            text = await loop.run_in_executor(None, chunk_queue.get)
+            if text is None:
+                break
+            full_answer += text
+            yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+
+        await stream_future
+
+        # Fallback if LLM failed
+        if not full_answer or any(x in full_answer.lower() for x in ["[mock", "oops!", "trouble connecting"]):
+            relevant = [c for c in retrieved_chunks if c.get("score", -99) >= -10.5]
+            full_answer = "\n\n---\n\n".join(
+                f"### From **{c['source_document']}** (Section: *{c['section_title']}*):\n\n{c['text'].strip()}"
+                for c in relevant[:3]
+            ) if relevant else "I couldn't find relevant information in your permitted collections."
+            yield f"data: {json.dumps({'type': 'replace', 'text': full_answer})}\n\n"
+
+        await loop.run_in_executor(None, save_turn, username, question, full_answer)
+        log_query(username, user_role, original_question, "hybrid_rag", confidence_score)
+
+        yield f"data: {json.dumps({'type': 'done', 'sources': sources, 'retrieval_type': 'hybrid_rag', 'confidence_score': confidence_score, 'confidence_label': confidence_label})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.get("/collections/{role}")
 def get_collections(role: str):
-    role_lower = role.lower()
-    if role_lower not in ROLE_COLLECTIONS:
+    r = role.lower()
+    if r not in ROLE_COLLECTIONS:
         raise HTTPException(status_code=400, detail="Invalid user role")
-    return {
-        "role": role_lower,
-        "collections": ROLE_COLLECTIONS[role_lower]
-    }
+    return {"role": r, "collections": ROLE_COLLECTIONS[r]}
 
 
 @app.get("/health")

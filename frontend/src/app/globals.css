@@ -83,12 +83,13 @@ body {
 }
 
 @keyframes pulse-soft {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.6;
-  }
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
 }
 
 /* --- Login Screen Styling --- */
@@ -627,6 +628,33 @@ body {
 
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* Streaming cursor shown while bot is still generating */
+.streaming-cursor::after {
+  content: '▋';
+  display: inline-block;
+  margin-left: 2px;
+  animation: blink-cursor 0.7s infinite;
+  color: var(--color-teal);
+  font-size: 0.9em;
+}
+
+/* Confidence badges */
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+.confidence-high   { background: rgba(16,185,129,0.1);  color: var(--color-emerald); border: 1px solid rgba(16,185,129,0.25); }
+.confidence-medium { background: rgba(14,165,233,0.1);  color: var(--color-sky);     border: 1px solid rgba(14,165,233,0.25); }
+.confidence-low    { background: rgba(244,63,94,0.1);   color: var(--color-rose);    border: 1px solid rgba(244,63,94,0.25); }
 
 /* Markdown styling in messages */
 .message-bubble h1, .message-bubble h2, .message-bubble h3 {

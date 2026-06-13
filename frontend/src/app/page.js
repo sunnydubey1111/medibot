@@ -2,261 +2,289 @@
 
 import { useState, useEffect, useRef } from 'react';
 
-// Demo accounts metadata
 const DEMO_ACCOUNTS = [
-  { username: 'dr.mehta', role: 'doctor', name: 'Dr. Mehta', title: 'Senior Medical Director' },
-  { username: 'nurse.priya', role: 'nurse', name: 'Nurse Priya', title: 'ICU Head Nurse' },
-  { username: 'billing.ravi', role: 'billing_executive', name: 'Ravi Das', title: 'Insurance Lead' },
-  { username: 'tech.anand', role: 'technician', name: 'Anand Sharma', title: 'Biomedical Technician' },
-  { username: 'admin.sys', role: 'admin', name: 'System Admin', title: 'IT & Executive Ops' }
+  { username: 'dr.mehta',     role: 'doctor',            name: 'Dr. Mehta',     title: 'Senior Medical Director' },
+  { username: 'nurse.priya',  role: 'nurse',             name: 'Nurse Priya',   title: 'ICU Head Nurse' },
+  { username: 'billing.ravi', role: 'billing_executive', name: 'Ravi Das',      title: 'Insurance Lead' },
+  { username: 'tech.anand',   role: 'technician',        name: 'Anand Sharma',  title: 'Biomedical Technician' },
+  { username: 'admin.sys',    role: 'admin',             name: 'System Admin',  title: 'IT & Executive Ops' },
 ];
+
+const ROLE_COLLECTIONS_DESC = {
+  doctor:            'Clinical treatment protocols, drug formulary, diagnostic guidelines, nursing care, and general policies',
+  nurse:             'ICU nursing procedures, infection control, and general staff FAQs',
+  billing_executive: 'Insurance billing codes, claim submission guides, and general staff handbooks',
+  technician:        'Medical equipment manual, calibration procedures, and staff handbook',
+  admin:             'All documents and relational database query access',
+};
 
 const BACKEND_URL = 'http://localhost:8000';
 
 export default function Home() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [collections, setCollections] = useState([]);
-  const [messages, setMessages] = useState([]);
-  const [inputText, setInputText] = useState('');
+  const [user, setUser]                   = useState(null);
+  const [loading, setLoading]             = useState(false);
+  const [collections, setCollections]     = useState([]);
+  const [messages, setMessages]           = useState([]);
+  const [inputText, setInputText]         = useState('');
   const [backendHealthy, setBackendHealthy] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Check health of backend on mount
   useEffect(() => {
     fetch(`${BACKEND_URL}/health`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.status === 'ok') setBackendHealthy(true);
-      })
-      .catch(err => {
-        console.error("Backend health check failed:", err);
-        setBackendHealthy(false);
-      });
+      .then(r => r.json())
+      .then(d => { if (d.status === 'ok') setBackendHealthy(true); })
+      .catch(() => setBackendHealthy(false));
   }, []);
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, loading]);
 
-  // Handle demo login click
+  // ── Token refresh ─────────────────────────────────────────────────────────
+  const refreshAccessToken = async () => {
+    const rt = localStorage.getItem('medibot_refresh_token');
+    if (!rt) return null;
+    try {
+      const res = await fetch(`${BACKEND_URL}/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: rt }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.token;
+    } catch {
+      return null;
+    }
+  };
+
+  // ── Login ─────────────────────────────────────────────────────────────────
   const handleLogin = async (username) => {
     setLoading(true);
     try {
       const res = await fetch(`${BACKEND_URL}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password: 'password' })
+        body: JSON.stringify({ username, password: 'password' }),
       });
-      if (!res.ok) throw new Error("Login failed");
+      if (!res.ok) throw new Error('Login failed');
       const userData = await res.json();
+
+      localStorage.setItem('medibot_refresh_token', userData.refresh_token);
       setUser(userData);
-      
-      // Fetch allowed collections for this role
+
       const colRes = await fetch(`${BACKEND_URL}/collections/${userData.role}`);
-      if (colRes.ok) {
-        const colData = await colRes.json();
-        setCollections(colData.collections);
-      }
-      
-      // Add initial greeting message
-      setMessages([
-        {
-          sender: 'bot',
-          text: `Welcome, ${userData.name}! I am **MediBot**, your clinical and operational assistant. \n\nHow can I help you today? You have access to the following collections: **${ROLE_COLLECTIONS_DESC[userData.role]}**.`
-        }
-      ]);
+      if (colRes.ok) setCollections((await colRes.json()).collections);
+
+      setMessages([{
+        sender: 'bot',
+        text: `Welcome, ${userData.name}! I am **MediBot**, your clinical and operational assistant.\n\nHow can I help you today? You have access to: **${ROLE_COLLECTIONS_DESC[userData.role]}**.`,
+      }]);
     } catch (err) {
       console.error(err);
-      alert("Could not login. Please make sure the FastAPI backend is running on http://localhost:8000!");
+      alert('Could not login. Please make sure the FastAPI backend is running on http://localhost:8000!');
     } finally {
       setLoading(false);
     }
   };
 
   const handleLogout = () => {
+    localStorage.removeItem('medibot_refresh_token');
     setUser(null);
     setCollections([]);
     setMessages([]);
   };
 
-  // Send message to FastAPI
+  // ── Send message (streaming) ──────────────────────────────────────────────
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!inputText.trim() || !user) return;
 
     const queryText = inputText;
     setInputText('');
-    
-    // Add user message to UI
-    setMessages(prev => [...prev, { sender: 'user', text: queryText }]);
     setLoading(true);
 
-    try {
-      const res = await fetch(`${BACKEND_URL}/chat`, {
+    // Add user message + empty bot placeholder in one update
+    setMessages(prev => [
+      ...prev,
+      { sender: 'user', text: queryText },
+      { sender: 'bot', text: '', streaming: true, sources: [], retrieval_type: null },
+    ]);
+
+    const doRequest = async (token) => {
+      return fetch(`${BACKEND_URL}/chat/stream`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.token}`
+          'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ question: queryText, role: user.role })
+        body: JSON.stringify({ question: queryText, role: user.role }),
       });
+    };
 
-      if (!res.ok) throw new Error("Chat request failed");
-      const data = await res.json();
+    try {
+      let res = await doRequest(user.token);
 
-      // Check if message was blocked/refused by RBAC
-      const isRefusal = data.answer.includes("do not have permissions") || 
-                        data.answer.includes("don't have access") ||
-                        data.answer.includes("unauthorized");
+      // Transparent token refresh on 401
+      if (res.status === 401) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          setUser(prev => ({ ...prev, token: newToken }));
+          res = await doRequest(newToken);
+        } else {
+          handleLogout();
+          return;
+        }
+      }
 
-      setMessages(prev => [...prev, {
-        sender: 'bot',
-        text: data.answer,
-        sources: data.sources || [],
-        retrieval_type: data.retrieval_type,
-        isBlocked: isRefusal
-      }]);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() ?? '';
+
+        for (const part of parts) {
+          if (!part.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(part.slice(6));
+
+            if (event.type === 'chunk') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                updated[updated.length - 1] = { ...last, text: last.text + event.text };
+                return updated;
+              });
+            } else if (event.type === 'replace') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                updated[updated.length - 1] = { ...last, text: event.text };
+                return updated;
+              });
+            } else if (event.type === 'done') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                const isBlocked = last.text.includes('do not have permission') ||
+                                  last.text.includes("don't have access") ||
+                                  last.text.includes('unauthorized');
+                updated[updated.length - 1] = {
+                  ...last,
+                  streaming: false,
+                  sources: event.sources || [],
+                  retrieval_type: event.retrieval_type,
+                  confidence_score: event.confidence_score,
+                  confidence_label: event.confidence_label,
+                  isBlocked,
+                };
+                return updated;
+              });
+            } else if (event.type === 'error') {
+              setMessages(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  sender: 'bot', text: event.text || 'An error occurred.',
+                  streaming: false, isError: true,
+                };
+                return updated;
+              });
+            }
+          } catch (_) {}
+        }
+      }
     } catch (err) {
       console.error(err);
-      setMessages(prev => [...prev, {
-        sender: 'bot',
-        text: "Sorry, I had trouble reaching the server. Please check that the backend service is running on http://localhost:8000.",
-        isError: true
-      }]);
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          sender: 'bot',
+          text: `Sorry, I had trouble reaching the server. ${err.message}`,
+          streaming: false,
+          isError: true,
+        };
+        return updated;
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const ROLE_COLLECTIONS_DESC = {
-    doctor: "Clinical treatment protocols, drug formulary, diagnostic guidelines, nursing care, and general policies",
-    nurse: "ICU nursing procedures, infection control, and general staff FAQs",
-    billing_executive: "Insurance billing codes, claim submission guides, and general staff handbooks",
-    technician: "Medical equipment manual, calibration procedures, and staff handbook",
-    admin: "All documents and relational database query access"
-  };
-
-  // Helper function to render text with basic markdown styling safely
+  // ── Markdown renderer ─────────────────────────────────────────────────────
   const renderFormattedText = (text) => {
     if (!text) return null;
 
     const formatInline = (str) => {
       if (typeof str !== 'string') return str;
-      // Bold **text** (requires non-whitespace boundaries)
-      let formatted = str.replace(/\*\*([^\s\*](?:[^\*]*?[^\s\*])?)\*\*/g, '<strong>$1</strong>');
-      // Italics *text* (requires non-whitespace boundaries)
-      formatted = formatted.replace(/\*([^\s\*](?:[^\*]*?[^\s\*])?)\*/g, '<em>$1</em>');
-      // Inline code `code`
-      formatted = formatted.replace(/`([^`]+?)`/g, '<code>$1</code>');
-      return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
+      let f = str.replace(/\*\*([^\s*](?:[^*]*?[^\s*])?)\*\*/g, '<strong>$1</strong>');
+      f = f.replace(/\*([^\s*](?:[^*]*?[^\s*])?)\*/g, '<em>$1</em>');
+      f = f.replace(/`([^`]+?)`/g, '<code>$1</code>');
+      return <span dangerouslySetInnerHTML={{ __html: f }} />;
     };
-    
-    // Check if it's a markdown table
+
     if (text.includes('|') && text.includes('\n')) {
       const lines = text.split('\n');
-      const tableRows = [];
-      let isTable = false;
-      let headerCols = [];
-      
-      for (let line of lines) {
+      let headerCols = [], tableRows = [], isTable = false;
+      for (const line of lines) {
         if (line.trim().startsWith('|')) {
           isTable = true;
-          const cols = line.split('|').map(c => c.trim()).filter((c, idx, arr) => idx > 0 && idx < arr.length - 1);
-          if (line.includes('---')) continue; // Skip delimiter row
-          
-          if (headerCols.length === 0) {
-            headerCols = cols;
-          } else {
-            tableRows.push(cols);
-          }
+          const cols = line.split('|').map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
+          if (line.includes('---')) continue;
+          if (!headerCols.length) headerCols = cols;
+          else tableRows.push(cols);
         }
       }
-      
-      if (isTable && headerCols.length > 0) {
+      if (isTable && headerCols.length) {
         return (
           <div className="table-responsive my-2">
             <table>
-              <thead>
-                <tr>
-                  {headerCols.map((col, idx) => <th key={idx}>{formatInline(col)}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {tableRows.map((row, rowIdx) => (
-                  <tr key={rowIdx}>
-                    {row.map((col, colIdx) => <td key={colIdx}>{formatInline(col)}</td>)}
-                  </tr>
-                ))}
-              </tbody>
+              <thead><tr>{headerCols.map((c, i) => <th key={i}>{formatInline(c)}</th>)}</tr></thead>
+              <tbody>{tableRows.map((r, ri) => <tr key={ri}>{r.map((c, ci) => <td key={ci}>{formatInline(c)}</td>)}</tr>)}</tbody>
             </table>
           </div>
         );
       }
     }
 
-    // Split text into lines for bullet lists or paragraphs
     const lines = text.split('\n');
-    let inList = false;
+    let inList = false, listItems = [];
     const elements = [];
-    let listItems = [];
 
     lines.forEach((line, idx) => {
       const trimmed = line.trim();
-      
-      // Match headings like #, ##, ###
-      const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
-      // Match bullet lists starting with *, -, +, or • (requires at least one space)
-      const bulletMatch = trimmed.match(/^([\*\-\+•]|&bull;)\s+(.*)$/);
-      
-      if (headingMatch) {
-        if (inList) {
-          elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>);
-          listItems = [];
-          inList = false;
-        }
-        const level = headingMatch[1].length;
-        const HeadingTag = `h${level}`;
-        elements.push(
-          <HeadingTag key={`h-${idx}`} className={`heading-l${level}`}>
-            {formatInline(headingMatch[2])}
-          </HeadingTag>
-        );
-      } else if (bulletMatch) {
+      const hMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+      const bMatch = trimmed.match(/^([*\-+•]|&bull;)\s+(.*)$/);
+
+      if (hMatch) {
+        if (inList) { elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>); listItems = []; inList = false; }
+        const Tag = `h${hMatch[1].length}`;
+        elements.push(<Tag key={`h-${idx}`} className={`heading-l${hMatch[1].length}`}>{formatInline(hMatch[2])}</Tag>);
+      } else if (bMatch) {
         inList = true;
-        listItems.push(
-          <li key={`li-${idx}`}>
-            {formatInline(bulletMatch[2])}
-          </li>
-        );
+        listItems.push(<li key={`li-${idx}`}>{formatInline(bMatch[2])}</li>);
       } else {
-        if (inList) {
-          elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>);
-          listItems = [];
-          inList = false;
-        }
-        
-        if (trimmed) {
-          elements.push(
-            <p key={`p-${idx}`} className="mb-2">
-              {formatInline(line)}
-            </p>
-          );
-        }
+        if (inList) { elements.push(<ul key={`ul-${idx}`}>{listItems}</ul>); listItems = []; inList = false; }
+        if (trimmed) elements.push(<p key={`p-${idx}`} className="mb-2">{formatInline(line)}</p>);
       }
     });
-
-    if (inList) {
-      elements.push(<ul key="ul-final">{listItems}</ul>);
-    }
-
+    if (inList) elements.push(<ul key="ul-final">{listItems}</ul>);
     return elements;
   };
 
-  // --- 1. Login View ---
+  // ── Login screen ──────────────────────────────────────────────────────────
   if (!user) {
     return (
       <div className="login-container">
@@ -265,22 +293,14 @@ export default function Home() {
             <h1 className="login-logo">MediBot</h1>
             <p className="login-subtitle">An AI Assistant for MediAssist Network</p>
           </div>
-          
           <div className="demo-account-list">
-            {DEMO_ACCOUNTS.map((acc) => (
-              <button 
-                key={acc.username}
-                className="demo-account-btn"
-                onClick={() => handleLogin(acc.username)}
-                disabled={loading}
-              >
+            {DEMO_ACCOUNTS.map(acc => (
+              <button key={acc.username} className="demo-account-btn" onClick={() => handleLogin(acc.username)} disabled={loading}>
                 <div className="account-info">
                   <span className="account-name">{acc.name}</span>
                   <span className="account-username">{acc.title} ({acc.username})</span>
                 </div>
-                <span className={`role-badge role-${acc.role}`}>
-                  {acc.role.replace('_', ' ')}
-                </span>
+                <span className={`role-badge role-${acc.role}`}>{acc.role.replace('_', ' ')}</span>
               </button>
             ))}
           </div>
@@ -289,55 +309,43 @@ export default function Home() {
     );
   }
 
-  // --- 2. Chat Dashboard View ---
+  // ── Chat dashboard ────────────────────────────────────────────────────────
   return (
     <div className="app-layout">
-      {/* Sidebar - Profile & Access scopes */}
       <div className="sidebar">
         <div className="sidebar-brand">MediBot</div>
-        
+
         <div className="user-profile-card">
           <div className="profile-header">
-            <div className="profile-avatar">
-              {user.name.split(' ').map(w => w[0]).join('')}
-            </div>
+            <div className="profile-avatar">{user.name.split(' ').map(w => w[0]).join('')}</div>
             <div className="profile-details">
               <span className="profile-name">{user.name}</span>
               <span className="profile-title">{user.username}</span>
             </div>
           </div>
-          <span className={`role-badge role-${user.role} block text-center mt-2`}>
-            {user.role.replace('_', ' ')}
-          </span>
+          <span className={`role-badge role-${user.role} block text-center mt-2`}>{user.role.replace('_', ' ')}</span>
         </div>
 
         <div className="access-scope">
           <span className="scope-title">Authorized Document Collections</span>
           <div className="collection-list">
             {['general', 'clinical', 'nursing', 'billing', 'equipment'].map(col => {
-              const isAllowed = collections.includes(col);
+              const allowed = collections.includes(col);
               return (
-                <div 
-                  key={col} 
-                  className={`collection-item ${isAllowed ? 'active' : ''}`}
-                >
+                <div key={col} className={`collection-item ${allowed ? 'active' : ''}`}>
                   <span className="collection-dot"></span>
                   <span className="capitalize">{col}</span>
-                  {!isAllowed && <span className="ml-auto text-[10px] text-rose-400 uppercase font-semibold">Blocked</span>}
+                  {!allowed && <span className="ml-auto text-[10px] text-rose-400 uppercase font-semibold">Blocked</span>}
                 </div>
               );
             })}
           </div>
         </div>
 
-        <button className="logout-btn" onClick={handleLogout}>
-          Sign Out & Switch Profile
-        </button>
+        <button className="logout-btn" onClick={handleLogout}>Sign Out &amp; Switch Profile</button>
       </div>
 
-      {/* Main Chat Workspace */}
       <div className="chat-section">
-        {/* Header */}
         <div className="chat-header">
           <div className="header-title">Clinical Inquiry Panel</div>
           <div className="system-status">
@@ -346,7 +354,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Messages */}
         <div className="messages-container">
           {messages.length === 0 ? (
             <div className="empty-state">
@@ -356,43 +363,40 @@ export default function Home() {
             </div>
           ) : (
             messages.map((msg, index) => (
-              <div 
-                key={index} 
-                className={`message-wrapper ${msg.sender === 'user' ? 'user' : 'bot'}`}
-              >
+              <div key={index} className={`message-wrapper ${msg.sender === 'user' ? 'user' : 'bot'}`}>
                 <div className="message-bubble">
-                  {renderFormattedText(msg.text)}
+                  <div className={msg.streaming ? 'streaming-cursor' : ''}>
+                    {renderFormattedText(msg.text)}
+                  </div>
 
-                  {/* Render RBAC rejection alert card for user awareness */}
                   {msg.isBlocked && (
                     <div className="rbac-blocked-card">
                       <span className="rbac-blocked-icon">⚠️</span>
                       <div className="rbac-blocked-text">
-                        <strong>Access Restricted:</strong> Your current user profile does not have permission to view this specific clinical, billing, or equipment information. If you require this information, please request access from the hospital IT Helpdesk.
+                        <strong>Access Restricted:</strong> Your current profile does not have permission to view this information. Contact the hospital IT Helpdesk to request access.
                       </div>
                     </div>
                   )}
 
-                  {/* Message Metadata (badge, citations) */}
-                  {msg.sender === 'bot' && (msg.retrieval_type || (msg.sources && msg.sources.length > 0)) && (
+                  {msg.sender === 'bot' && !msg.streaming && (msg.retrieval_type || (msg.sources && msg.sources.length > 0)) && (
                     <div className="response-meta">
                       {msg.retrieval_type && (
-                        <span className="retrieval-badge">
-                          {msg.retrieval_type.replace('_', ' ')}
+                        <span className="retrieval-badge">{msg.retrieval_type.replace('_', ' ')}</span>
+                      )}
+
+                      {msg.confidence_label && (
+                        <span className={`confidence-badge confidence-${msg.confidence_label}`}>
+                          {msg.confidence_label === 'high' ? '●' : msg.confidence_label === 'medium' ? '◕' : '○'} {msg.confidence_label}
                         </span>
                       )}
-                      
+
                       {msg.sources && msg.sources.length > 0 && (
                         <div className="flex-grow">
                           <div className="sources-title">Verified Sources ({msg.sources.length})</div>
                           <div className="citations-list">
-                            {msg.sources.map((src, sIdx) => (
-                              <span 
-                                key={sIdx} 
-                                className="citation-tag" 
-                                title={`Collection: ${src.collection}`}
-                              >
-                                📄 {src.source_document} {src.section_title ? `| ${src.section_title}` : ''}
+                            {msg.sources.map((src, si) => (
+                              <span key={si} className="citation-tag" title={`Collection: ${src.collection}`}>
+                                📄 {src.source_document}{src.section_title ? ` | ${src.section_title}` : ''}
                               </span>
                             ))}
                           </div>
@@ -404,8 +408,8 @@ export default function Home() {
               </div>
             ))
           )}
-          
-          {loading && (
+
+          {loading && messages[messages.length - 1]?.streaming !== true && (
             <div className="message-wrapper bot">
               <div className="message-bubble">
                 <div className="typing-indicator">
@@ -416,28 +420,21 @@ export default function Home() {
               </div>
             </div>
           )}
-          
+
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Bar Form */}
         <div className="chat-input-container">
           <form className="chat-input-form" onSubmit={handleSendMessage}>
-            <input 
-              type="text" 
+            <input
+              type="text"
               className="chat-input-field"
-              placeholder={`Ask MediBot (queries will be logged as ${user.role.replace('_', ' ')})...`}
+              placeholder={`Ask MediBot (${user.role.replace('_', ' ')})...`}
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={e => setInputText(e.target.value)}
               disabled={loading}
             />
-            <button 
-              type="submit" 
-              className="chat-send-btn"
-              disabled={loading || !inputText.trim()}
-            >
-              ➔
-            </button>
+            <button type="submit" className="chat-send-btn" disabled={loading || !inputText.trim()}>➔</button>
           </form>
         </div>
       </div>

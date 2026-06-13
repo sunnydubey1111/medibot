@@ -213,6 +213,33 @@ def check_docs_staleness(data_root: Path, backend_dir: Path):
         print("[Staleness Check] All documents are up to date with the current index.")
 
 
+def add_chunk_overlap(chunks: List[Dict[str, Any]], overlap_words: int = 50) -> List[Dict[str, Any]]:
+    """
+    Prepends the last `overlap_words` words of a chunk's raw text to the
+    embedded_text of the next chunk within the same source document.
+    Helps retrieve answers that span chunk boundaries without altering raw text.
+    Only affects the next ingest run — existing Qdrant data is unchanged.
+    """
+    from collections import defaultdict
+
+    doc_order = defaultdict(list)
+    for i, chunk in enumerate(chunks):
+        doc_order[chunk["metadata"]["source_document"]].append(i)
+
+    result = [dict(c) for c in chunks]
+
+    for indices in doc_order.values():
+        for j in range(1, len(indices)):
+            prev_words = result[indices[j - 1]]["raw_text"].split()
+            if len(prev_words) >= overlap_words:
+                overlap_text = " ".join(prev_words[-overlap_words:])
+                result[indices[j]]["embedded_text"] = (
+                    f"[Prior context: …{overlap_text}]\n\n{result[indices[j]]['embedded_text']}"
+                )
+
+    return result
+
+
 def parse_and_chunk_documents(data_root: Path) -> List[Dict[str, Any]]:
     converter = DocumentConverter()
     chunker = HierarchicalChunker()
@@ -283,6 +310,10 @@ def main():
     if not chunks:
         print("No chunks generated. Ingestion aborted.")
         return
+
+    # 1b. Add cross-chunk overlap to improve boundary recall
+    print("Adding chunk overlap...")
+    chunks = add_chunk_overlap(chunks, overlap_words=50)
 
     # 2. Fit BM25 Encoder on embedded texts
     print("Fitting BM25 Encoder...")

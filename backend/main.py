@@ -1,6 +1,8 @@
 import os
 import sys
-from fastapi import FastAPI, HTTPException, Depends
+import time
+import jwt
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -155,10 +157,6 @@ If the provided passages do not contain the answer, state that you cannot find t
 Maintain a professional, helpful, and clinically safe tone.
 """
 
-import jwt
-import time
-from fastapi import Header
-
 JWT_SECRET = os.getenv("JWT_SECRET", "mediassist_secret_key_12345_secure_rag")
 
 def encode_jwt(payload: dict) -> str:
@@ -235,7 +233,7 @@ def login(req: LoginRequest):
         "username": req.username.lower(),
         "role": user["role"],
         "name": user["name"],
-        "exp": time.time() + 86400  # Token valid for 24 hours
+        "exp": int(time.time()) + 86400  # Token valid for 24 hours
     }
     token = encode_jwt(payload)
     
@@ -309,8 +307,13 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
     # 3. Process Hybrid Document RAG
     else:
         # Retrieve top chunks with retrieval-layer RBAC filtering
-        retrieved_chunks = retrieve_hybrid_and_rerank(question, user_role)
-        
+        try:
+            retrieved_chunks = retrieve_hybrid_and_rerank(question, user_role)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=503, detail=f"Search index not ready. Please run ingestion first. ({str(e)})")
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Document search unavailable: {str(e)}")
+
         # If no chunks returned, inform the user they don't have access or no matches
         if not retrieved_chunks:
             refusal_message = f"I couldn't find any relevant information in the guides and policies you have permission to view ({', '.join(ROLE_COLLECTIONS[user_role])}). If you require clinical protocols, billing guides, or equipment manuals, please log in with the appropriate role."

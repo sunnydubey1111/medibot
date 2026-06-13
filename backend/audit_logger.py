@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 BACKEND_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 AUDIT_LOG_PATH = BACKEND_DIR / "audit.log"
@@ -21,7 +22,7 @@ def log_query(
     role: str,
     question: str,
     retrieval_type: str,
-    confidence: float = None,
+    confidence: Optional[float] = None,
     blocked: bool = False,
 ):
     entry = {

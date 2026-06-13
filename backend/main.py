@@ -118,6 +118,8 @@ def check_restricted_keywords(question: str, role: str) -> Optional[str]:
         "dosage", "drug formulary", "treatment protocol", "coronary", "cardiac",
         "infarction", "nstemi", "diagnostics", "troponin", "medicine", "prescribe",
         "treatment steps", "drug dosage", "clinical doc",
+        "antibiotic", "medication", "drug", "therapy", "diagnosis", "symptom",
+        "disease", "infection", "patient care", "clinical", "pharma",
     ]):
         return f"As a {role.replace('_', ' ')}, you do not have permission to access clinical protocols and drug formularies. Please consult a doctor or log in with the Doctor role."
 

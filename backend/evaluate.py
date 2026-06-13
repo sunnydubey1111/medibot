@@ -102,7 +102,8 @@ def run_evaluation():
     valid = [r for r in results if r.get("faithfulness") is not None]
     if valid:
         avg_f = round(sum(r["faithfulness"] for r in valid) / len(valid), 3)
-        avg_r = round(sum(r["relevancy"] for r in valid if r.get("relevancy") is not None) / len(valid), 3)
+        valid_r = [r for r in valid if r.get("relevancy") is not None]
+        avg_r = round(sum(r["relevancy"] for r in valid_r) / len(valid_r), 3) if valid_r else 0.0
         print("=== Summary ===")
         print(f"Avg Faithfulness : {avg_f}")
         print(f"Avg Relevancy    : {avg_r}")

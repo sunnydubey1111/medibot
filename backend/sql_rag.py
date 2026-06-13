@@ -198,7 +198,29 @@ def fallback_response_generator(question: str, sql_query: str, db_result: str) -
         
     return f"Based on the database records, the result is: {json.dumps(data)}"
 
-def sql_rag_chain(question: str) -> str:
+# Tables each role is permitted to query
+ROLE_ALLOWED_TABLES = {
+    "billing_executive": ["claims"],
+    "admin":             ["claims", "maintenance_tickets"],
+}
+
+
+def _check_table_access(sql_query: str, user_role: str) -> str | None:
+    """Returns an error message if the query accesses a table the role cannot see, else None."""
+    allowed = ROLE_ALLOWED_TABLES.get(user_role, [])
+    all_tables = ["claims", "maintenance_tickets"]
+    q_upper = sql_query.upper()
+    for table in all_tables:
+        if table.upper() in q_upper and table not in allowed:
+            return (
+                f"⚠️ **Access Denied:** As a {user_role.replace('_', ' ')}, you are not authorised "
+                f"to query the `{table}` table. "
+                f"You can only access: {', '.join(f'`{t}`' for t in allowed)}."
+            )
+    return None
+
+
+def sql_rag_chain(question: str, user_role: str = "admin") -> str:
     """
     Translates the question to SQL, executes it, and outputs a natural language answer.
     """
@@ -219,10 +241,16 @@ def sql_rag_chain(question: str) -> str:
         sql_query = fallback_sql_generator(question)
     else:
         sql_query = clean_sql_query(raw_sql)
-        
+
     print(f"\n[SQL RAG] Question: {question}")
     print(f"[SQL RAG] Generated SQL:\n{sql_query}")
-    
+
+    # Step 2: Table-level RBAC check
+    access_error = _check_table_access(sql_query, user_role)
+    if access_error:
+        print(f"[SQL RAG] Blocked by table RBAC for role '{user_role}'")
+        return access_error
+
     # Step 3: Execute SQL against database
     db_result = execute_sql(sql_query)
     print(f"[SQL RAG] Execution result: {db_result[:500]}...")

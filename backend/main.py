@@ -308,7 +308,7 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(None)):
                    f"I can only search: {', '.join(ROLE_COLLECTIONS[user_role])}.")
             log_query(username, user_role, original_question, "sql_rag", blocked=True)
             return ChatResponse(answer=msg, sources=[], retrieval_type="sql_rag", role=user_role)
-        answer = sql_rag_chain(question)
+        answer = sql_rag_chain(question, user_role)
         log_query(username, user_role, original_question, "sql_rag")
         return ChatResponse(answer=answer, sources=[], retrieval_type="sql_rag", role=user_role)
 

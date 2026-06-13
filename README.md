@@ -50,11 +50,16 @@ graph TD
     J -- "Exact keyword match" --> L[Sparse BM25 Keyword Search\n Qdrant filter: access_roles must include user_role]
     K -- "Ranked results" --> M[Reciprocal Rank Fusion RRF\n Restricted chunks never returned by DB]
     L -- "Ranked results" --> M
-    M --> N[Cross-Encoder Reranking: Top-10 → Top-3]
+    M --> Q{Any chunks returned\n for this role?}
+    Q -- "No chunks\n role has no access or no match" --> R[Return: No relevant info found\n in your permitted collections]
+    Q -- "Yes" --> N[Cross-Encoder Reranking: Top-10 → Top-3]
     N --> O[LLM generates answer with Source Citations]
 
-    I & O & E & H --> P[Chat Response returned to Frontend]
+    I & O & E & H & R --> P[Chat Response returned to Frontend]
 ```
+
+> **Qdrant Role → Collection Mapping:**
+> `doctor` → clinical, nursing, general &nbsp;|&nbsp; `nurse` → nursing, general &nbsp;|&nbsp; `billing_executive` → billing, general &nbsp;|&nbsp; `technician` → equipment, general &nbsp;|&nbsp; `admin` → all collections
 
 ---
 
